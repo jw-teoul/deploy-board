@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>배포 현황 보드</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1f2328; --mute:#6b7280; --line:#e5e7eb; --acc:#2563eb;
+          --st-branch:#9ca3af; --st-pr:#f59e0b; --st-develop:#3b82f6; --st-staging:#8b5cf6; --st-prod:#16a34a; }
+  * { box-sizing:border-box }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif; background:var(--bg); color:var(--ink) }
+  header { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap }
+  header h1 { font-size:17px; margin:0 12px 0 0 }
+  .mute { color:var(--mute) } .small { font-size:12px }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--card); cursor:pointer }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc) }
+  button:disabled { opacity:.5; cursor:default }
+  input[type=search] { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; min-width:220px }
+  select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card) }
+  main { padding:14px 16px; max-width:1500px; margin:0 auto }
+  .err { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:8px 12px; border-radius:6px; margin-bottom:12px; white-space:pre-wrap; font-size:12px }
+  .repo { background:var(--card); border:1px solid var(--line); border-radius:10px; margin-bottom:18px; overflow:hidden }
+  .repo > .head { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap }
+  .repo > .head h2 { font-size:16px; margin:0 }
+  .envs { display:grid; grid-template-columns:repeat(3,1fr); gap:0; border-bottom:1px solid var(--line) }
+  .env { padding:10px 14px; border-right:1px solid var(--line) } .env:last-child { border-right:0 }
+  .env .name { font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em }
+  .env .sha { font-family:ui-monospace,Consolas,monospace; font-size:12px }
+  .env .msg { white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .arrow { color:var(--mute); font-size:12px; margin-top:4px }
+  .board { display:grid; grid-template-columns:minmax(200px,.8fr) minmax(200px,.8fr) minmax(260px,1.4fr) minmax(220px,1fr) minmax(220px,1fr); gap:0; overflow-x:auto }
+  .col { border-right:1px solid var(--line); min-height:120px; padding:8px; min-width:0 } .col:last-child { border-right:0 }
+  .col h3 { margin:0 0 8px; font-size:12px; font-weight:600; display:flex; align-items:center; gap:6px }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block }
+  .chip { display:block; width:100%; text-align:left; border:1px solid var(--line); border-left:4px solid var(--c,var(--mute)); border-radius:6px; padding:6px 8px; margin-bottom:6px; background:var(--card); cursor:pointer }
+  .chip:hover { border-color:var(--acc) }
+  .chip .key { font-weight:600; font-size:12px }
+  .chip .title { font-size:12px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .chip .flags { font-size:11px; color:#b45309 }
+  .chip .age { font-size:11px; color:var(--mute); float:right }
+  .stage-branch { --c:var(--st-branch) } .stage-pr { --c:var(--st-pr) } .stage-develop { --c:var(--st-develop) } .stage-staging { --c:var(--st-staging) } .stage-prod { --c:var(--st-prod) }
+  .more { font-size:12px; color:var(--mute); padding:4px 6px }
+  .diff { padding:8px 14px; border-top:1px solid var(--line); font-size:12px }
+  .diff summary { cursor:pointer; color:var(--mute) }
+  .diff li { margin:2px 0 }
+  code { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:#f3f4f6; padding:1px 4px; border-radius:3px }
+  a { color:var(--acc); text-decoration:none } a:hover { text-decoration:underline }
+  #panel { position:fixed; top:0; right:0; width:min(520px,100%); height:100%; background:var(--card); border-left:1px solid var(--line); box-shadow:-4px 0 20px rgba(0,0,0,.08); transform:translateX(100%); transition:transform .15s; z-index:10; overflow:auto; padding:16px }
+  #panel.open { transform:none }
+  #panel h2 { margin:0 0 4px; font-size:16px }
+  #panel h4 { margin:14px 0 6px; font-size:13px }
+  #panel ul { padding-left:18px; margin:0 } #panel li { margin:3px 0; font-size:12px }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; color:#fff; background:var(--c,var(--mute)) }
+  .track { display:flex; gap:4px; margin:8px 0 }
+  .track span { flex:1; text-align:center; font-size:11px; padding:4px 0; border-radius:4px; background:#f3f4f6; color:var(--mute) }
+  .track span.on { background:var(--c); color:#fff }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid #cbd5e1; border-top-color:var(--acc); border-radius:50%; animation:sp .8s linear infinite; vertical-align:-2px }
+  @keyframes sp { to { transform:rotate(360deg) } }
+  @media (max-width:900px) { .board { grid-template-columns:1fr } .col { border-right:0; border-bottom:1px solid var(--line) } .envs { grid-template-columns:1fr } }
+</style>
+</head>
+<body>
+<header>
+  <h1>배포 현황 보드</h1>
+  <button id="refresh" class="primary">새로고침</button>
+  <span id="collected" class="small mute"></span>
+  <label class="small"><input type="checkbox" id="auto"> 10분마다 자동</label>
+  <span style="flex:1"></span>
+  <input type="search" id="q" placeholder="이슈 키·제목 검색 (예: 2414)">
+  <select id="days">
+    <option value="7">최근 7일</option>
+    <option value="30" selected>최근 30일</option>
+    <option value="90">최근 90일</option>
+    <option value="0">전체</option>
+  </select>
+  <label class="small"><input type="checkbox" id="hideBranch"> 브랜치만 있는 것 숨김</label>
+</header>
+<main>
+  <div id="errors"></div>
+  <div id="repos"></div>
+</main>
+<aside id="panel"><button id="close" style="float:right">닫기</button><div id="panelBody"></div></aside>
+<script>
+const STAGES = ["branch","pr","develop","staging","prod"];
+const LABEL = {branch:"브랜치", pr:"PR", develop:"develop", staging:"스테이징", prod:"운영"};
+const DESC = {branch:"브랜치만 있음(PR 없음)", pr:"PR 열림", develop:"develop 머지", staging:"deploy/prod 머지 (staging 슬롯)", prod:"운영 swap 완료"};
+let STATE = null, POLL = null, AUTO = null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = s => { if (!s) return "-"; const d = new Date(s); return d.toLocaleString("ko-KR", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hour12:false}); };
+const ago = s => { if (!s) return ""; const m = (Date.now() - new Date(s)) / 60000; if (m < 60) return Math.max(1, Math.round(m)) + "분 전"; if (m < 1440) return Math.round(m/60) + "시간 전"; return Math.round(m/1440) + "일 전"; };
+const short = s => s ? s.slice(0, 8) : "-";
+const jira = k => STATE?.jira_base ? `<a href="${STATE.jira_base}${k}" target="_blank">${k}</a>` : k;
+
+async function load() {
+  const r = await fetch("/api/state", {cache:"no-store"});
+  STATE = await r.json();
+  render();
+  trackStatus(STATE.status);
+}
+function trackStatus(st) {
+  const running = st?.running;
+  $("#refresh").disabled = !!running;
+  $("#refresh").innerHTML = running ? '<span class="spin"></span> 수집 중…' : "새로고침";
+  const c = STATE?.collected_at;
+  $("#collected").textContent = (c ? `수집 ${fmt(c)} (${ago(c)}, ${STATE.duration_s ?? "?"}초)` : "아직 수집 전") + (st?.last_error ? " · 마지막 수집 오류" : "");
+  if (running && !POLL) POLL = setInterval(async () => {
+    const s = await (await fetch("/api/status", {cache:"no-store"})).json();
+    if (!s.running) { clearInterval(POLL); POLL = null; load(); } else trackStatus(s);
+  }, 2000);
+}
+$("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"}); const s = await (await fetch("/api/status")).json(); trackStatus(s); };
+$("#auto").onchange = e => { if (AUTO) clearInterval(AUTO); AUTO = e.target.checked ? setInterval(() => $("#refresh").click(), 10*60*1000) : null; };
+["#q","#days","#hideBranch"].forEach(s => $(s).oninput = render);
+$("#close").onclick = () => $("#panel").classList.remove("open");
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("#panel").classList.remove("open"); });
+
+function visible(i) {
+  const q = $("#q").value.trim().toLowerCase();
+  const days = +$("#days").value;
+  if (q && !(i.key.toLowerCase().includes(q) || (i.title||"").toLowerCase().includes(q))) return false;
+  if (days && i.last_activity && (Date.now() - new Date(i.last_activity)) > days*86400000) return false;
+  if ($("#hideBranch").checked && i.stage === "branch") return false;
+  return true;
+}
+
+function render() {
+  if (!STATE) return;
+  const errs = [...(STATE.errors||[]), ...(STATE.status?.last_error ? [STATE.status.last_error] : [])];
+  $("#errors").innerHTML = errs.length ? `<div class="err">${esc(errs.join("\n"))}</div>` : "";
+  $("#repos").innerHTML = (STATE.repos||[]).map(renderRepo).join("");
+  document.querySelectorAll(".chip").forEach(el => el.onclick = () => openIssue(el.dataset.repo, el.dataset.key));
+}
+
+function envBox(name, h, extra) {
+  return `<div class="env"><div class="name">${name}</div>
+    <div class="sha">${h?.sha ? `<code>${short(h.sha)}</code>` : "<span class='mute'>미확인</span>"} <span class="mute small">${h?.date ? fmt(h.date) : ""}</span></div>
+    <div class="msg small" title="${esc(h?.message||"")}">${esc(h?.message||"")}</div>
+    <div class="arrow">${extra||""}</div></div>`;
+}
+
+function renderRepo(r) {
+  if (r.errors?.length && !r.issues) return `<section class="repo"><div class="head"><h2>${esc(r.label)}</h2></div><div class="err">${esc(r.errors.join("\n"))}</div></section>`;
+  const issues = (r.issues||[]).filter(visible);
+  const cols = STAGES.map(st => {
+    const list = issues.filter(i => i.stage === st);
+    const shown = list.slice(0, 40);
+    return `<div class="col"><h3><span class="dot" style="background:var(--st-${st})"></span>${LABEL[st]} <span class="mute">${list.length}</span><span class="mute small" style="font-weight:400;margin-left:auto">${DESC[st]}</span></h3>
+      ${shown.map(i => `<button class="chip stage-${i.stage}" data-repo="${r.name}" data-key="${i.key}">
+        <span class="age">${ago(i.last_activity)}</span><span class="key">${esc(i.key)}</span>
+        <div class="title" title="${esc(i.title||"")}">${esc(i.title||"")}</div>
+        ${i.flags?.length ? `<div class="flags">${esc(i.flags.join(" · "))}</div>` : ""}</button>`).join("")}
+      ${list.length > shown.length ? `<div class="more">+${list.length - shown.length}개 더 (검색으로 좁히기)</div>` : ""}</div>`;
+  }).join("");
+  const so = r.staging_only?.commits || [], dv = r.develop_only?.commits || [];
+  const swap = r.swaps?.[0];
+  const devOnlyText = `${dv.length}개 커밋이 develop 에만`;
+  const stOnlyText = r.staging_only ? `${so.length}개 커밋이 스테이징에만(운영 미반영)` : "운영 SHA 미확인";
+  const commitList = (list) => list.length ? `<ul>${list.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span> <a href="${c.url}" target="_blank">↗</a></li>`).join("")}</ul>` : "<div class='mute'>없음</div>";
+  return `<section class="repo">
+    <div class="head"><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
+      <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
+      ${r.hosts?.prod ? `<a class="small" href="https://${r.hosts.prod}" target="_blank">운영</a>` : ""}
+      ${r.hosts?.staging ? `<a class="small" href="https://${r.hosts.staging}" target="_blank">스테이징</a>` : ""}
+      <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""} ${r.duration_s ?? ""}초</span></div>
+    <div class="envs">
+      ${envBox("develop", r.develop, `→ deploy/prod: ${devOnlyText}`)}
+      ${envBox("스테이징 (deploy/prod)", r.staging, `→ 운영: ${stOnlyText}`)}
+      ${envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
+    </div>
+    <div class="board">${cols}</div>
+    <details class="diff"><summary>스테이징에만 있는 커밋 ${so.length} · develop 에만 있는 커밋 ${dv.length} · 운영 SHA 근거</summary>
+      <h4>운영 SHA 근거</h4><div>${esc(r.prod?.basis||"")}</div>
+      <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}
+      <h4>develop 에만(deploy/prod 미반영, cherry-pick 동일 패치 제외)</h4>${commitList(dv)}
+      <h4>최근 배포 run (deploy/prod)</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${x.url}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
+      <h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    </details>
+  </section>`;
+}
+
+function openIssue(repo, key) {
+  const r = STATE.repos.find(x => x.name === repo); const i = r?.issues.find(x => x.key === key); if (!i) return;
+  const on = new Set(i.stages);
+  $("#panelBody").innerHTML = `<h2 class="stage-${i.stage}">${jira(i.key)} <span class="pill">${LABEL[i.stage]}</span></h2>
+    <div class="small mute">${esc(r.label)} · 마지막 활동 ${fmt(i.last_activity)} (${ago(i.last_activity)})</div>
+    <div class="title">${esc(i.title||"")}</div>
+    <div class="track stage-${i.stage}">${STAGES.map(s => `<span class="${on.has(s) ? "on" : ""}">${LABEL[s]}</span>`).join("")}</div>
+    ${i.flags?.length ? `<div class="flags" style="color:#b45309">${esc(i.flags.join(" · "))}</div>` : ""}
+    <h4>브랜치 ${i.branches.length}</h4><ul>${i.branches.map(b => `<li><a href="${b.url}" target="_blank"><code>${esc(b.name)}</code></a> ${esc(b.author)} ${fmt(b.date)}<br><span class="mute">${esc(b.message)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>PR ${i.prs.length}</h4><ul>${i.prs.map(p => `<li><a href="${p.url}" target="_blank">#${p.number}</a> → <code>${esc(p.baseRefName)}</code> ${esc(p.state)}${p.isDraft ? "(Draft)" : ""} ${p.mergedAt ? "머지 " + fmt(p.mergedAt) : fmt(p.updatedAt)} ${esc(p.author||"")}<br><span class="mute">${esc(p.title)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>스테이징에만 있는 커밋 ${i.staging_only.length}</h4><ul>${i.staging_only.map(c => `<li><a href="${c.url}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>develop 에만 있는 커밋 ${i.develop_only.length}</h4><ul>${i.develop_only.map(c => `<li><a href="${c.url}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>`;
+  $("#panel").classList.add("open");
+}
+load();
+</script>
+</body>
+</html>

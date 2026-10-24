@@ -1,0 +1,12 @@
+{
+  "org": "edb-data-biz",
+  "resource_group": "VisionGroup_AppService",
+  "jira_base": "https://edb.atlassian.net/browse/",
+  "issue_key_pattern": "\\b(?:PILLDOC|PHAI|MOBILE|PA2|PI)-\\d+\\b",
+  "swap_lookback_days": 90,
+  "repos": [
+    {"name": "adminsite",   "app": "AdminSiteLinux-Prod", "workflow": "deploy.yml", "label": "AdminSite"},
+    {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site"},
+    {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2"}
+  ]
+}
