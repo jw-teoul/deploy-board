@@ -54,6 +54,13 @@
   .track { display:flex; gap:4px; margin:8px 0 }
   .track span { flex:1; text-align:center; font-size:11px; padding:4px 0; border-radius:4px; background:#f3f4f6; color:var(--mute) }
   .track span.on { background:var(--c); color:#fff }
+  .help { background:#eef4ff; border:1px solid #c7d7fe; border-radius:10px; padding:12px 16px; margin-bottom:14px; font-size:13px }
+  .help.hidden { display:none }
+  .help-head { display:flex; align-items:center; gap:8px; margin-bottom:6px } .help-head button { margin-left:auto }
+  .help-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:18px }
+  .help h4 { margin:8px 0 4px; font-size:13px } .help ol, .help ul { margin:0; padding-left:18px } .help li { margin:3px 0 } .help p { margin:6px 0 0 }
+  .help .dot { margin-right:4px; vertical-align:-1px }
+  @media (max-width:900px) { .help-grid { grid-template-columns:1fr } }
   .spin { display:inline-block; width:12px; height:12px; border:2px solid #cbd5e1; border-top-color:var(--acc); border-radius:50%; animation:sp .8s linear infinite; vertical-align:-2px }
   @keyframes sp { to { transform:rotate(360deg) } }
   @media (max-width:900px) { .board { grid-template-columns:1fr } .col { border-right:0; border-bottom:1px solid var(--line) } .envs { grid-template-columns:1fr } }
@@ -74,8 +81,50 @@
     <option value="0">전체</option>
   </select>
   <label class="small"><input type="checkbox" id="hideBranch"> 브랜치만 있는 것 숨김</label>
+  <button id="helpBtn" title="이 보드 읽는 법">? 설명</button>
 </header>
 <main>
+  <section id="help" class="help">
+    <div class="help-head"><strong>이 보드 읽는 법</strong><span class="mute small">— Jira 작업(이슈 키) 하나가 지금 어디까지 나갔는지를 레포별로 보여 줍니다.</span><button id="helpClose" class="small">닫기</button></div>
+    <div class="help-grid">
+      <div>
+        <h4>배포 흐름과 5개 열</h4>
+        <ol>
+          <li><span class="dot" style="background:var(--st-branch)"></span><b>브랜치</b> — 작업 브랜치(<code>PILLDOC-xxxx</code>)만 있고 PR 이 없음. 작업 중이거나 머지 뒤 안 지운 브랜치.</li>
+          <li><span class="dot" style="background:var(--st-pr)"></span><b>PR</b> — PR 이 열려 있음(Draft 는 꼬리표).</li>
+          <li><span class="dot" style="background:var(--st-develop)"></span><b>develop</b> — develop 브랜치에 머지됨. 아직 운영 브랜치(<code>deploy/prod</code>)에는 없음.</li>
+          <li><span class="dot" style="background:var(--st-staging)"></span><b>스테이징</b> — <code>deploy/prod</code> 에 머지돼 GitHub Actions 가 Azure <b>staging 슬롯</b>에 올림. 아직 운영 사용자는 못 봄.</li>
+          <li><span class="dot" style="background:var(--st-prod)"></span><b>운영</b> — staging → production <b>swap</b> 이 끝나 실제 서비스에 반영됨.</li>
+        </ol>
+        <p class="small mute">한 이슈가 여러 단계에 걸쳐 있으면 가장 높은 단계 열에 둡니다. 칩을 누르면 브랜치·PR·커밋 목록과 Jira 링크가 열립니다.</p>
+      </div>
+      <div>
+        <h4>레포 위 세 칸</h4>
+        <ul>
+          <li><b>develop</b> — develop 의 최신 커밋. 「→ deploy/prod: N개 커밋이 develop 에만」은 아직 운영 브랜치로 안 넘어간 커밋 수(cherry-pick 으로 이미 넘어간 같은 내용은 제외).</li>
+          <li><b>스테이징</b> — <code>deploy/prod</code> 의 최신 커밋. 「→ 운영: N개 커밋이 스테이징에만」은 swap 을 기다리는 커밋 수.</li>
+          <li><b>운영(추정)</b> — Azure 는 운영에 어떤 커밋이 떠 있는지 알려 주지 않아서, <b>마지막 swap 직전에 성공한 배포 run 의 커밋</b>으로 추정합니다. swap 을 되돌렸거나 포털에서 수동 배포했으면 틀릴 수 있습니다(근거는 아래 접힌 영역).</li>
+        </ul>
+        <h4>꼬리표</h4>
+        <ul>
+          <li>「develop 에만 있는 커밋 있음(운영 미반영)」 — 같은 이슈의 추가 커밋이 develop 에 남아 있음.</li>
+          <li>「운영 반영 뒤 추가 커밋이 스테이징에 있음」 — 운영에 한 번 나갔지만 후속 수정이 swap 대기.</li>
+          <li>「stg/ 브랜치」 — 스테이징 검증용 브랜치가 있음. 「Draft PR」 — 열린 PR 이 Draft.</li>
+        </ul>
+      </div>
+      <div>
+        <h4>자료 출처와 갱신</h4>
+        <ul>
+          <li>GitHub: 브랜치·커밋(로컬 클론 git), PR, <code>deploy.yml</code> 실행 기록.</li>
+          <li>Azure: App Service 활동 기록의 slot swap(시각·실행자).</li>
+          <li>Jira 는 링크만 연결합니다(상태는 안 읽음).</li>
+          <li>「새로고침」을 누르면 다시 수집합니다(약 1분). 실시간이 아니라 상단의 수집 시각을 보세요. 「10분마다 자동」을 켜면 주기적으로 갱신합니다.</li>
+          <li>기본 필터는 최근 30일 활동 이슈만 보여 줍니다. 오래된 것은 「전체」로.</li>
+        </ul>
+        <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 (웹·API, Azure swap 배포). 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다.</p>
+      </div>
+    </div>
+  </section>
   <div id="errors"></div>
   <div id="repos"></div>
 </main>
@@ -113,6 +162,11 @@ $("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"
 $("#auto").onchange = e => { if (AUTO) clearInterval(AUTO); AUTO = e.target.checked ? setInterval(() => $("#refresh").click(), 10*60*1000) : null; };
 ["#q","#days","#hideBranch"].forEach(s => $(s).oninput = render);
 $("#close").onclick = () => $("#panel").classList.remove("open");
+// 설명 패널: 처음엔 보이고, 닫으면 이 브라우저에서는 기억한다
+const helpSeen = (() => { try { return localStorage.getItem("helpClosed") === "1"; } catch { return false; } })();
+if (helpSeen) $("#help").classList.add("hidden");
+$("#helpClose").onclick = () => { $("#help").classList.add("hidden"); try { localStorage.setItem("helpClosed", "1"); } catch {} };
+$("#helpBtn").onclick = () => { $("#help").classList.toggle("hidden"); try { localStorage.setItem("helpClosed", $("#help").classList.contains("hidden") ? "1" : "0"); } catch {} };
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#panel").classList.remove("open"); });
 
 function visible(i) {
