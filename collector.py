@@ -181,6 +181,22 @@ class Collector:
                 return r["headSha"], f"마지막 swap {swaps[0]['time'][:19]}Z 이전 마지막 성공 배포 run({r['updatedAt']})"
         return None, "마지막 swap 이전 성공 배포 run 을 조회 범위(30건)에서 못 찾음"
 
+    # ---------- 변경 감지(가벼운 조회) ----------
+    def probe_repo(self, rc):
+        """레포가 바뀌었는지 싸게 본다: 원격 브랜치 끝 커밋 전체(ls-remote 1회) + 가장 최근 갱신된 PR 시각(API 1회)."""
+        g = Repo(self.local_path(rc), self.org, rc["name"])
+        refs = g.git("ls-remote", "--heads", "origin", timeout=60)
+        import hashlib
+        h = hashlib.sha1(refs.encode("utf-8")).hexdigest()[:12]
+        pr = gh_json(["api", f"repos/{self.org}/{rc['name']}/pulls?state=all&sort=updated&direction=desc&per_page=1"], timeout=60)
+        pr_at = pr[0]["updated_at"] if pr else None
+        return {"refs": h, "pr": pr_at}
+
+    def probe_swap(self, app):
+        """마지막 성공 swap 시각(활동 기록 1회)."""
+        sw = self.swaps(app)
+        return sw[0]["time"] if sw else None
+
     def local_path(self, rc):
         p = rc.get("local") or os.path.join(HERE, "..", "projects", rc["name"])
         return os.path.abspath(p)
@@ -232,6 +248,7 @@ class Collector:
                 r["errors"].append(f"스테이징·운영 비교 실패 — {e}")
         r["issues"] = self.judge_issues(r, g)
         r["duration_s"] = round(time.time() - t0, 1)
+        r["collected_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         return r
 
     def judge_issues(self, r, g):
@@ -317,6 +334,24 @@ class Collector:
 def load_cfg(path=None):
     with open(path or os.path.join(HERE, "repos.json"), encoding="utf-8") as f:
         return json.load(f)
+
+
+def merge_state(new, out):
+    """일부 레포만 수집한 결과를 기존 state.json 에 합친다(같은 이름은 교체, 나머지는 유지)."""
+    try:
+        with open(out, encoding="utf-8") as f:
+            old = json.load(f)
+    except Exception:
+        return new
+    names = {r["name"] for r in new["repos"]}
+    merged = dict(old)
+    merged["repos"] = [r for r in old.get("repos", []) if r["name"] not in names] + new["repos"]
+    order = {rc["name"]: i for i, rc in enumerate(load_cfg()["repos"])}
+    merged["repos"].sort(key=lambda r: order.get(r["name"], 99))
+    merged["collected_at"] = new["collected_at"]
+    merged["duration_s"] = new["duration_s"]
+    merged["errors"] = [e for e in old.get("errors", []) if not any(e.startswith(n + ":") for n in names)] + new.get("errors", [])
+    return merged
 
 
 def write_state(state, out):

@@ -74,7 +74,7 @@
   <h1>배포 현황 보드</h1>
   <button id="refresh" class="primary">새로고침</button>
   <span id="collected" class="small mute"></span>
-  <label class="small"><input type="checkbox" id="auto"> 10분마다 자동</label>
+  <span id="watch" class="small mute" title="서버가 30초마다 레포 변경(브랜치 끝 커밋·PR 갱신)을, 2분마다 Azure swap 을 확인해 바뀐 레포만 다시 수집합니다. 이 화면은 10초마다 서버 상태를 물어 바뀌면 자동 반영합니다."></span>
   <span style="flex:1"></span>
   <input type="search" id="q" placeholder="이슈 키·제목 검색 (예: 2414)">
   <select id="days">
@@ -128,7 +128,8 @@
           <li>GitHub: 브랜치·커밋(로컬 클론 git), PR, <code>deploy.yml</code> 실행 기록.</li>
           <li>Azure: App Service 활동 기록의 slot swap(시각·실행자).</li>
           <li>Jira 는 링크만 연결합니다(상태는 안 읽음).</li>
-          <li>「새로고침」을 누르면 다시 수집합니다(약 1분). 실시간이 아니라 상단의 수집 시각을 보세요. 「10분마다 자동」을 켜면 주기적으로 갱신합니다.</li>
+          <li>서버가 30초마다 레포 변경(브랜치 끝 커밋·PR 갱신)을, 2분마다 Azure swap 을 가볍게 확인해 바뀐 레포만 다시 수집하고, 이 화면은 10초마다 그 결과를 받아 자동 반영합니다(단계가 바뀐 캐릭터가 걸어갑니다). 「새로고침」은 전체를 즉시 다시 수집합니다(약 1분).</li>
+          <li>웹훅(GitHub·Azure 가 바로 알려 주는 방식)은 외부에서 접근되는 주소가 필요해 지금은 쓸 수 없습니다. 나중에 붙이면 즉시 반영됩니다.</li>
           <li>기본 필터는 최근 30일 활동 이슈만 보여 줍니다. 오래된 것은 「전체」로.</li>
         </ul>
         <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 (웹·API, Azure swap 배포). 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다.</p>
@@ -144,7 +145,7 @@
 const STAGES = ["branch","pr","develop","staging","prod"];
 const LABEL = {branch:"브랜치", pr:"PR", develop:"develop", staging:"스테이징", prod:"운영"};
 const DESC = {branch:"브랜치만 있음(PR 없음)", pr:"PR 열림", develop:"develop 머지", staging:"deploy/prod 머지 (staging 슬롯)", prod:"운영 swap 완료"};
-let STATE = null, POLL = null, AUTO = null;
+let STATE = null, POLL = null;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = s => { if (!s) return "-"; const d = new Date(s); return d.toLocaleString("ko-KR", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hour12:false}); };
@@ -161,16 +162,24 @@ async function load() {
 function trackStatus(st) {
   const running = st?.running;
   $("#refresh").disabled = !!running;
-  $("#refresh").innerHTML = running ? '<span class="spin"></span> 수집 중…' : "새로고침";
+  $("#refresh").innerHTML = running ? `<span class="spin"></span> 수집 중${st.running_repos ? " (" + st.running_repos.join(", ") + ")" : ""}…` : "새로고침";
   const c = STATE?.collected_at;
   $("#collected").textContent = (c ? `수집 ${fmt(c)} (${ago(c)}, ${STATE.duration_s ?? "?"}초)` : "아직 수집 전") + (st?.last_error ? " · 마지막 수집 오류" : "");
-  if (running && !POLL) POLL = setInterval(async () => {
-    const s = await (await fetch("/api/status", {cache:"no-store"})).json();
-    if (!s.running) { clearInterval(POLL); POLL = null; load(); } else trackStatus(s);
-  }, 2000);
+  const w = st?.watch;
+  if (w?.enabled) {
+    const ch = Object.entries(w.changes || {}).sort((a, b) => (b[1].at > a[1].at ? 1 : -1))[0];
+    $("#watch").textContent = `자동 감시 ${w.check_s}초 · swap ${w.swap_check_s}초` + (w.last_check ? ` · 확인 ${ago(w.last_check)}` : " · 첫 확인 대기")
+      + (ch ? ` · 최근 변화 ${ch[0]} ${fmt(ch[1].at)} (${{refs:"커밋", pr:"PR", swap:"swap"}[ch[1].why] || ch[1].why})` : "") + (w.probe_error ? " · 감시 오류" : "");
+  } else $("#watch").textContent = "자동 감시 꺼짐";
 }
-$("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"}); const s = await (await fetch("/api/status")).json(); trackStatus(s); };
-$("#auto").onchange = e => { if (AUTO) clearInterval(AUTO); AUTO = e.target.checked ? setInterval(() => $("#refresh").click(), 10*60*1000) : null; };
+// 서버 상태를 10초마다 묻고, 수집 결과가 바뀌었으면 다시 그린다(캐릭터가 이동한다)
+setInterval(async () => {
+  try {
+    const s = await (await fetch("/api/status", {cache:"no-store"})).json();
+    if (STATE && s.collected_at && s.collected_at !== STATE.collected_at && !s.running) load(); else trackStatus(s);
+  } catch {}
+}, 10000);
+$("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"}); const s = await (await fetch("/api/status")).json(); trackStatus(s); if (!POLL) POLL = setInterval(async () => { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); if (!t.running) { clearInterval(POLL); POLL = null; load(); } else trackStatus(t); }, 2000); };
 ["#q","#days","#hideBranch","#showTable"].forEach(s => $(s).oninput = render);
 $("#close").onclick = () => $("#panel").classList.remove("open");
 // 설명 패널: 처음엔 보이고, 닫으면 이 브라우저에서는 기억한다

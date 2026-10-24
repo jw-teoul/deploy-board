@@ -79,5 +79,48 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(collector.Collector.estimate_prod(runs, [])[0], None)
 
 
+
+class MergeTest(unittest.TestCase):
+    def test_merge_replaces_only_collected_repo(self):
+        import json, os, tempfile
+        old = {"collected_at": "t0", "duration_s": 40, "errors": ["adminsite: x", "pilldocsite: y"],
+               "repos": [{"name": "adminsite", "v": 1}, {"name": "pilldocsite", "v": 1}, {"name": "agentapiv2", "v": 1}]}
+        fd, path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(old, f)
+        new = {"collected_at": "t1", "duration_s": 12, "errors": [], "repos": [{"name": "pilldocsite", "v": 2}]}
+        m = collector.merge_state(new, path)
+        os.remove(path)
+        self.assertEqual([r["name"] for r in m["repos"]], ["adminsite", "pilldocsite", "agentapiv2"])
+        self.assertEqual({r["name"]: r["v"] for r in m["repos"]}["pilldocsite"], 2)
+        self.assertEqual(m["collected_at"], "t1")
+        self.assertEqual(m["errors"], ["adminsite: x"])
+
+
+class WatcherTest(unittest.TestCase):
+    """감시 스레드의 tick: 지문이 바뀐 레포만 refresh(only=[...]) 로 넘기는지."""
+
+    def test_tick_refreshes_only_changed(self):
+        import server
+        cfg = {"org": "o", "repos": [{"name": "a", "app": "A"}, {"name": "b", "app": "B"}]}
+        probes = {"a": {"refs": "1", "pr": "p"}, "b": {"refs": "1", "pr": "p"}}
+        swaps = {"A": "s1", "B": "s1"}
+        calls = []
+        orig = (collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap, server.refresh)
+        collector.load_cfg = lambda path=None: cfg
+        collector.Collector.probe_repo = lambda self, rc: dict(probes[rc["name"]])
+        collector.Collector.probe_swap = lambda self, app: swaps[app]
+        server.refresh = lambda only=None: calls.append(only)
+        try:
+            w = server.Watcher(30, 120)
+            w.tick(); self.assertEqual(calls, [])                 # 첫 tick 은 기준만 잡는다
+            probes["b"]["refs"] = "2"; w.tick(); self.assertEqual(calls, [["b"]])
+            w.tick(); self.assertEqual(calls, [["b"]])              # 변화 없으면 안 부른다
+            w.last_swap_check = 0; swaps["A"] = "s2"; w.tick(); self.assertEqual(calls, [["b"], ["a"]])
+            self.assertEqual(server.status["watch"]["changes"]["a"]["why"], "swap")
+        finally:
+            collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap, server.refresh = orig
+
+
 if __name__ == "__main__":
     unittest.main()
