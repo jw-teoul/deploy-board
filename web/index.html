@@ -84,7 +84,11 @@
     <option value="0">전체</option>
   </select>
   <label class="small"><input type="checkbox" id="hideBranch"> 브랜치만 있는 것 숨김</label>
-  <label class="small"><input type="checkbox" id="showTable"> 표도 보기</label>
+  <label class="small">보기 <select id="view">
+    <option value="pixel">픽셀 사무실</option>
+    <option value="board">표 (5열 보드)</option>
+    <option value="both">둘 다</option>
+  </select></label>
   <button id="helpBtn" title="이 보드 읽는 법">? 설명</button>
 </header>
 <main>
@@ -105,7 +109,7 @@
         <ul>
           <li>방 5개가 위 다섯 단계이고, 캐릭터 하나가 이슈 하나입니다(머리 위 숫자 = 이슈 번호). 캐릭터를 누르면 브랜치·PR·커밋 목록과 Jira 링크가 열립니다.</li>
           <li>새로고침 뒤 단계가 바뀐 이슈는 다음 방으로 걸어가고, 새 이슈는 왼쪽 입구로 들어오며, 목록에서 빠진 이슈는 오른쪽으로 나갑니다.</li>
-          <li>방 자리(18명)보다 이슈가 많으면 방 이름 옆에 「+N 자리 없음」으로 표시됩니다. 「표도 보기」를 켜면 전체 목록이 아래에 나옵니다.</li>
+          <li>방 자리(18명)보다 이슈가 많으면 방 이름 옆에 「+N 자리 없음」으로 표시됩니다. 헤더의 「보기」에서 픽셀 대신 표(5열 보드)나 둘 다를 고를 수 있고, 표에는 자리와 상관없이 전부 나옵니다.</li>
         </ul>
       </div>
       <div>
@@ -180,7 +184,11 @@ setInterval(async () => {
   } catch {}
 }, 10000);
 $("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"}); const s = await (await fetch("/api/status")).json(); trackStatus(s); if (!POLL) POLL = setInterval(async () => { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); if (!t.running) { clearInterval(POLL); POLL = null; load(); } else trackStatus(t); }, 2000); };
-["#q","#days","#hideBranch","#showTable"].forEach(s => $(s).oninput = render);
+["#q","#days","#hideBranch"].forEach(s => $(s).oninput = render);
+// 보기 방식(픽셀/표/둘 다)은 브라우저에 기억
+const VIEW = () => $("#view").value;
+try { const v = new URLSearchParams(location.search).get("view") || localStorage.getItem("view"); if (v) $("#view").value = v; } catch {}
+$("#view").onchange = () => { try { localStorage.setItem("view", VIEW()); } catch {} render(); };
 $("#close").onclick = () => $("#panel").classList.remove("open");
 // 설명 패널: 처음엔 보이고, 닫으면 이 브라우저에서는 기억한다
 const helpSeen = (() => { try { return localStorage.getItem("helpClosed") === "1"; } catch { return false; } })();
@@ -246,8 +254,8 @@ function renderRepo(r) {
       ${envBox("스테이징 (deploy/prod)", r.staging, `→ 운영: ${stOnlyText}`)}
       ${envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
     </div>
-    <div class="office-wrap"><canvas class="office" data-repo="${r.name}"></canvas></div>
-    <div class="board ${$("#showTable").checked ? "" : "hidden"}">${cols}</div>
+    ${VIEW() !== "board" ? `<div class="office-wrap"><canvas class="office" data-repo="${r.name}"></canvas></div>` : ""}
+    ${VIEW() !== "pixel" ? `<div class="board">${cols}</div>` : ""}
     <details class="diff"><summary>스테이징에만 있는 커밋 ${so.length} · develop 에만 있는 커밋 ${dv.length} · 운영 SHA 근거</summary>
       <h4>운영 SHA 근거</h4><div>${esc(r.prod?.basis||"")}</div>
       <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}

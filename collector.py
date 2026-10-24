@@ -136,13 +136,15 @@ class Collector:
             self._sub = sh(["az", "account", "show", "--query", "id", "-o", "tsv"]).strip()
         return self._sub
 
-    def swaps(self, app):
+    def swaps(self, app, days=None):
         """성공한 slot swap 목록(최신순). 작업 이름은 slotsswap/SlotsSwap 으로 대소문자가 섞여 있고,
         사람 호출과 SlotSwapJobProcessor 호출이 같은 swap 에 둘 다 남으므로 1분 단위로 합치고 사람 쪽을 남긴다."""
         rid = (f"/subscriptions/{self.subscription()}/resourceGroups/{self.cfg['resource_group']}"
                f"/providers/Microsoft.Web/sites/{app}")
-        days = int(self.cfg.get("swap_lookback_days", 90))
-        d = az_json(["monitor", "activity-log", "list", "--resource-id", rid, "--offset", f"{days}d"])
+        days = int(days or self.cfg.get("swap_lookback_days", 90))
+        # 기본 --max-events 50 이면 배포가 잦은 날 swap 이 최근 50건 밖으로 밀려 안 보인다(10-24 사고) → 넉넉히 올리고 필드만 줄인다
+        d = az_json(["monitor", "activity-log", "list", "--resource-id", rid, "--offset", f"{days}d", "--max-events", "5000",
+                     "--select", "eventTimestamp", "operationName", "status", "caller"], timeout=300)
         events = []
         for e in d or []:
             op = ((e.get("operationName") or {}).get("value") or "").lower()
@@ -193,8 +195,8 @@ class Collector:
         return {"refs": h, "pr": pr_at}
 
     def probe_swap(self, app):
-        """마지막 성공 swap 시각(활동 기록 1회)."""
-        sw = self.swaps(app)
+        """마지막 성공 swap 시각(활동 기록 1회, 최근 7일만 — 전체 90일은 17초라 감시엔 무겁다)."""
+        sw = self.swaps(app, days=7)
         return sw[0]["time"] if sw else None
 
     def local_path(self, rc):

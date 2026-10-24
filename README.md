@@ -24,7 +24,7 @@ python -m unittest test_collector      # 단계 판정 테스트
 | develop 에만 있는 커밋 | `git log --no-merges --cherry-pick --right-only origin/deploy/prod...origin/develop` (cherry-pick 된 같은 패치 제외) |
 | PR(상태·base·머지 커밋) | `gh pr list --state all -L 300` |
 | 스테이징 배포 run | `gh run list --workflow deploy.yml -b deploy/prod` |
-| swap 기록 | `az monitor activity-log list --resource-id <site>` 의 `slotsswap` Succeeded (리소스 그룹 필터로는 안 나오고, 작업 이름 대소문자가 섞여 있어 소문자로 비교) |
+| swap 기록 | `az monitor activity-log list --resource-id <site> --max-events 5000` 의 `slotsswap` Succeeded (리소스 그룹 필터로는 안 나오고, 작업 이름 대소문자가 섞여 있어 소문자로 비교. 기본 `--max-events 50` 이면 배포가 잦은 날 swap 이 잘려 운영 판정이 사라진다) |
 | 운영 SHA(추정) | 마지막 swap 이전에 끝난 마지막 성공 배포 run 의 headSha — swap back·포털 수동 배포가 있으면 틀릴 수 있어 화면에 「추정」과 근거를 같이 보여 준다 |
 | 스테이징에만 있는 커밋 | `git log --cherry-pick <운영SHA>...origin/deploy/prod` |
 
@@ -33,7 +33,7 @@ python -m unittest test_collector      # 단계 판정 테스트
 ## 변경 감시(거의 실시간)
 서버가 켜져 있으면 기본으로 돈다(`--no-watch` 로 끔).
 - 30초마다(`--check`) 레포별로 가벼운 조회 2건 — `git ls-remote --heads origin`(브랜치 끝 커밋 전체 1회)과 가장 최근 갱신된 PR 시각(API 1회). 지난번과 다르면 그 레포만 다시 수집해 `state.json` 에 합친다(`merge_state`).
-- 2분마다(`--swap-check`) Azure 활동 기록에서 마지막 swap 시각을 보고 바뀌면 그 레포를 다시 수집한다.
+- 2분마다(`--swap-check`) Azure 활동 기록(최근 7일, 앱당 약 8초)에서 마지막 swap 시각을 보고 바뀌면 그 레포를 다시 수집한다.
 - 화면은 10초마다 `/api/status` 를 물어 `collected_at` 이 바뀌면 다시 그린다 → 단계가 바뀐 캐릭터가 걸어간다.
 - 비용: 변화가 없을 때 시간당 GitHub 약 360건 + ls-remote 360회, Azure 약 90건. 한도(GitHub 5,000/h, Azure 12,000/h)의 10% 아래.
 
@@ -43,5 +43,5 @@ python -m unittest test_collector      # 단계 판정 테스트
 `repos[]` 에 `name`(GitHub 레포)·`app`(Azure App Service 이름, 없으면 운영 판정 생략)·`workflow`·`label`·선택 `local`(클론 경로). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지).
 
 ## 픽셀 사무실 (`web/pixel.js`)
-레포마다 캔버스 하나. 방 5개 = 단계(대기실·리뷰실·개발실·스테이징·운영 서버실), 캐릭터 하나 = 이슈 하나(머리 위 번호). 캐릭터를 누르면 상세 패널. 새로고침으로 단계가 바뀐 이슈는 복도를 따라 다음 방으로 걸어가고, 새 이슈는 왼쪽 입구로 들어오며, 목록에서 빠진 이슈는 오른쪽으로 나간다(지난 단계는 브라우저 localStorage 에 기억). 방 자리는 18명, 넘치면 방 이름에 「+N 자리 없음」. 「표도 보기」로 기존 5열 표를 함께 본다.
+레포마다 캔버스 하나. 방 5개 = 단계(대기실·리뷰실·개발실·스테이징·운영 서버실), 캐릭터 하나 = 이슈 하나(머리 위 번호). 캐릭터를 누르면 상세 패널. 새로고침으로 단계가 바뀐 이슈는 복도를 따라 다음 방으로 걸어가고, 새 이슈는 왼쪽 입구로 들어오며, 목록에서 빠진 이슈는 오른쪽으로 나간다(지난 단계는 브라우저 localStorage 에 기억). 방 자리는 18명, 넘치면 방 이름에 「+N 자리 없음」. 헤더 「보기」로 픽셀 사무실 / 표(5열 보드) / 둘 다를 고른다(브라우저에 기억, 기본 픽셀). 표 모드에서는 캔버스를 만들지 않아 애니메이션 비용이 없다.
 외부 라이브러리·빌드 없음(Canvas 2D). 월드는 16px 타일로 그려 화면 폭에 맞춰 정수가 아니어도 확대(`image-rendering: pixelated`). 에셋 출처는 `web/assets/CREDITS.md`.
