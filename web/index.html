@@ -184,7 +184,10 @@ setInterval(async () => {
   } catch {}
 }, 10000);
 $("#refresh").onclick = async () => { await fetch("/api/refresh", {method:"POST"}); const s = await (await fetch("/api/status")).json(); trackStatus(s); if (!POLL) POLL = setInterval(async () => { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); if (!t.running) { clearInterval(POLL); POLL = null; load(); } else trackStatus(t); }, 2000); };
-["#q","#days","#hideBranch"].forEach(s => $(s).oninput = render);
+// 필터는 레포 섹션을 다시 만들지 않고 칩·캔버스만 갱신한다(펼쳐 둔 details 유지). 검색창은 타이핑이 멈춘 뒤 200ms 에 한 번만 적용.
+let qTimer = null;
+$("#q").oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(applyFilter, 200); };
+["#days","#hideBranch"].forEach(s => $(s).oninput = applyFilter);
 // 보기 방식(픽셀/표/둘 다)은 브라우저에 기억
 const VIEW = () => $("#view").value;
 try { const v = new URLSearchParams(location.search).get("view") || localStorage.getItem("view"); if (v) $("#view").value = v; } catch {}
@@ -211,11 +214,23 @@ function render() {
   const errs = [...(STATE.errors||[]), ...(STATE.status?.last_error ? [STATE.status.last_error] : [])];
   $("#errors").innerHTML = errs.length ? `<div class="err">${esc(errs.join("\n"))}</div>` : "";
   $("#repos").innerHTML = (STATE.repos||[]).map(renderRepo).join("");
-  document.querySelectorAll(".chip").forEach(el => el.onclick = () => openIssue(el.dataset.repo, el.dataset.key));
-  document.querySelectorAll("canvas.office").forEach(cv => {
-    const r = STATE.repos.find(x => x.name === cv.dataset.repo); if (!r?.issues) return;
-    PixelOffice.mount(cv, r.name, r.issues.filter(visible), key => openIssue(r.name, key));
-  });
+  applyFilter();
+}
+
+// 검색·기간·브랜치 숨김 적용: 이미 그려진 섹션 안의 보드 칩과 픽셀 캔버스만 바꾼다
+function applyFilter() {
+  if (!STATE) return;
+  for (const sec of document.querySelectorAll("section.repo[data-repo]")) {
+    const r = STATE.repos.find(x => x.name === sec.dataset.repo); if (!r?.issues) continue;
+    const issues = r.issues.filter(visible);
+    const board = sec.querySelector(".board");
+    if (board) {
+      board.innerHTML = renderCols(r, issues);
+      board.querySelectorAll(".chip").forEach(el => el.onclick = () => openIssue(el.dataset.repo, el.dataset.key));
+    }
+    const cv = sec.querySelector("canvas.office");
+    if (cv) PixelOffice.mount(cv, r.name, issues, key => openIssue(r.name, key));
+  }
 }
 
 function envBox(name, h, extra) {
@@ -225,10 +240,8 @@ function envBox(name, h, extra) {
     <div class="arrow">${extra||""}</div></div>`;
 }
 
-function renderRepo(r) {
-  if (r.errors?.length && !r.issues) return `<section class="repo"><div class="head"><h2>${esc(r.label)}</h2></div><div class="err">${esc(r.errors.join("\n"))}</div></section>`;
-  const issues = (r.issues||[]).filter(visible);
-  const cols = STAGES.map(st => {
+function renderCols(r, issues) {
+  return STAGES.map(st => {
     const list = issues.filter(i => i.stage === st);
     const shown = list.slice(0, 40);
     return `<div class="col"><h3><span class="dot" style="background:var(--st-${st})"></span>${LABEL[st]} <span class="mute">${list.length}</span><span class="mute small" style="font-weight:400;margin-left:auto">${DESC[st]}</span></h3>
@@ -238,12 +251,16 @@ function renderRepo(r) {
         ${i.flags?.length ? `<div class="flags">${esc(i.flags.join(" · "))}</div>` : ""}</button>`).join("")}
       ${list.length > shown.length ? `<div class="more">+${list.length - shown.length}개 더 (검색으로 좁히기)</div>` : ""}</div>`;
   }).join("");
+}
+
+function renderRepo(r) {
+  if (r.errors?.length && !r.issues) return `<section class="repo"><div class="head"><h2>${esc(r.label)}</h2></div><div class="err">${esc(r.errors.join("\n"))}</div></section>`;
   const so = r.staging_only?.commits || [], dv = r.develop_only?.commits || [];
   const swap = r.swaps?.[0];
   const devOnlyText = `${dv.length}개 커밋이 develop 에만`;
   const stOnlyText = r.staging_only ? `${so.length}개 커밋이 스테이징에만(운영 미반영)` : "운영 SHA 미확인";
   const commitList = (list) => list.length ? `<ul>${list.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span> <a href="${c.url}" target="_blank">↗</a></li>`).join("")}</ul>` : "<div class='mute'>없음</div>";
-  return `<section class="repo">
+  return `<section class="repo" data-repo="${esc(r.name)}">
     <div class="head"><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
       <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
       ${r.hosts?.prod ? `<a class="small" href="https://${r.hosts.prod}" target="_blank">운영</a>` : ""}
@@ -255,7 +272,7 @@ function renderRepo(r) {
       ${envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
     </div>
     ${VIEW() !== "board" ? `<div class="office-wrap"><canvas class="office" data-repo="${r.name}"></canvas></div>` : ""}
-    ${VIEW() !== "pixel" ? `<div class="board">${cols}</div>` : ""}
+    ${VIEW() !== "pixel" ? `<div class="board"></div>` : ""}
     <details class="diff"><summary>스테이징에만 있는 커밋 ${so.length} · develop 에만 있는 커밋 ${dv.length} · 운영 SHA 근거</summary>
       <h4>운영 SHA 근거</h4><div>${esc(r.prod?.basis||"")}</div>
       <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}
