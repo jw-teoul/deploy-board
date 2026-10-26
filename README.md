@@ -30,7 +30,7 @@ python -m unittest test_collector      # 단계 판정 테스트
 | develop / deploy/prod HEAD, 브랜치 목록 | 로컬 클론 `git fetch --prune` → `log`·`for-each-ref` |
 | develop 에만 있는 커밋 | `git log --no-merges --cherry-pick --right-only origin/deploy/prod...origin/develop` (cherry-pick 된 같은 패치 제외) |
 | PR(상태·base·머지 커밋) | `gh pr list --state all -L 300` |
-| 스테이징 배포 run | `gh run list --workflow deploy.yml -b deploy/prod` |
+| 스테이징 배포 run | `gh run list --workflow <workflow> -b <배포 브랜치>` |
 | swap 기록 | `az monitor activity-log list --resource-id <site> --max-events 5000` 의 `slotsswap` Succeeded (리소스 그룹 필터로는 안 나오고, 작업 이름 대소문자가 섞여 있어 소문자로 비교. 기본 `--max-events 50` 이면 배포가 잦은 날 swap 이 잘려 운영 판정이 사라진다) |
 | 운영 SHA(추정) | 마지막 swap 이전에 끝난 마지막 성공 배포 run 의 headSha — swap back·포털 수동 배포가 있으면 틀릴 수 있어 화면에 「추정」과 근거를 같이 보여 준다 |
 | 스테이징에만 있는 커밋 | `git log --cherry-pick <운영SHA>...origin/deploy/prod` |
@@ -47,7 +47,15 @@ python -m unittest test_collector      # 단계 판정 테스트
 웹훅(GitHub push/PR, Azure Event Grid 의 swap 이벤트)을 쓰면 폴링 없이 즉시 반영되지만, GitHub·Azure 가 호출할 수 있는 **외부 접근 주소가 필요해 지금은 안 된다**(로컬 PC·사내 개발 서버 모두 밖에서 못 들어온다). 나중에 중계(터널·공개 엔드포인트)가 생기면 그 훅이 `POST /api/refresh` 에 `{"repos":["<레포>"]}` 를 보내면 된다 — 엔드포인트는 이미 있다.
 
 ## 설정 `repos.json`
-`repos[]` 에 `name`(GitHub 레포)·`app`(Azure App Service 이름, 없으면 운영 판정 생략)·`workflow`·`label`·선택 `local`(클론 경로). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지).
+`repos[]` 한 항목이 레포 하나. 공통: `name`(GitHub 레포)·`workflow`(배포 워크플로 파일)·`label`·선택 `local`(클론 경로, 기본 `../projects/<name>` — 없으면 `gh repo clone` 으로 받고, 단일 브랜치 클론이면 fetch refspec 을 전체 브랜치로 넓힌다). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지).
+
+배포 방식에 따라 두 모드 중 하나:
+| 모드 | 키 | 스테이징 | 운영 | 예 |
+|---|---|---|---|---|
+| swap | `app`(Azure App Service 이름) | `deploy/prod` HEAD(= staging 슬롯) | 마지막 swap 이전 마지막 성공 run 의 SHA(추정) | adminsite·pilldocsite·agentapiv2·adpssite |
+| 브랜치 | `staging_branch`·`prod_branch`·선택 `hosts{staging,prod}` | 스테이징 브랜치 HEAD | 운영 브랜치의 마지막 성공 배포 run 의 SHA(머지가 곧 배포, swap 없음) | pillcheckver2frontend(Vercel: `deploy/dev`→staging.pillchk.com, `deploy/prod`→www.pillcheck.co.kr) |
+
+브랜치 모드에서는 변경 감시가 운영 브랜치의 마지막 run 상태도 함께 본다(배포 run 이 끝나야 운영이 바뀌므로). 화면의 레포 순서는 제목 옆 ▲▼ 로 바꾸며 브라우저(localStorage)에 기억된다 — `repos.json` 순서는 기본값일 뿐이다.
 
 ## 픽셀 사무실 (`web/pixel.js`)
 레포마다 캔버스 하나. 방 5개 = 단계(대기실·리뷰실·개발실·스테이징·운영 서버실), 캐릭터 하나 = 이슈 하나(머리 위 번호). 캐릭터를 누르면 상세 패널. 새로고침으로 단계가 바뀐 이슈는 복도를 따라 다음 방으로 걸어가고, 새 이슈는 왼쪽 입구로 들어오며, 목록에서 빠진 이슈는 오른쪽으로 나간다(지난 단계는 브라우저 localStorage 에 기억). 방 자리는 18명, 넘치면 방 이름에 「+N 자리 없음」. 헤더 「보기」로 픽셀 사무실 / 표(5열 보드) / 둘 다를 고른다(브라우저에 기억, 기본 픽셀). 표 모드에서는 캔버스를 만들지 않아 애니메이션 비용이 없다.

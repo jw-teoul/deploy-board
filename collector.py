@@ -2,6 +2,8 @@
 
 실행: python collector.py [--repo adminsite] [--out data/state.json]
 원천: 로컬 클론(git fetch → log --cherry-pick·for-each-ref·merge-base), gh pr list·gh run list, az monitor activity-log(slotsSwap).
+레포 모드: `app` 이 있으면 swap 모드(deploy/prod = staging 슬롯, 운영 = swap), `prod_branch` 가 있으면 브랜치 모드
+(스테이징 브랜치·운영 브랜치 머지가 곧 배포, 운영 = 운영 브랜치 마지막 성공 run). 클론이 없으면 `../projects/<repo>` 에 받는다.
 """
 import argparse
 import datetime as dt
@@ -59,6 +61,24 @@ class Repo:
 
     def git(self, *args, timeout=120):
         return sh(["git", "-C", self.path] + list(args), timeout=timeout)
+
+    def ensure(self):
+        """클론이 없으면 받고(gh repo clone — SSH/HTTPS 는 gh 설정을 따른다), 단일 브랜치 클론이면 모든 브랜치를 받도록 refspec 을 넓힌다.
+        돌려주는 값은 사람에게 보일 메모(없으면 None)."""
+        note = None
+        if not os.path.isdir(os.path.join(self.path, ".git")):
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            sh(["gh", "repo", "clone", f"{self.org}/{self.name}", self.path, "--", "--quiet"], timeout=900)
+            note = f"클론 새로 받음: {self.path}"
+        spec = "+refs/heads/*:refs/remotes/origin/*"
+        try:
+            cur = self.git("config", "--get-all", "remote.origin.fetch").split()
+        except RuntimeError:
+            cur = []
+        if spec not in cur:
+            self.git("config", "remote.origin.fetch", spec)
+            note = (note + " · " if note else "") + "단일 브랜치 클론이라 fetch refspec 을 전체 브랜치로 넓힘"
+        return note
 
     def fetch(self):
         self.git("fetch", "origin", "--prune", "--quiet", timeout=300)
@@ -125,9 +145,9 @@ class Collector:
             p["keys"] = sorted(set(self.keys_of(p["headRefName"]) + self.keys_of(p["title"])))
         return d
 
-    def deploy_runs(self, repo, workflow):
+    def deploy_runs(self, repo, workflow, branch="deploy/prod"):
         fields = "headSha,conclusion,status,createdAt,updatedAt,url,displayTitle,headBranch"
-        return gh_json(["run", "list", "-R", f"{self.org}/{repo}", "--workflow", workflow, "-b", "deploy/prod",
+        return gh_json(["run", "list", "-R", f"{self.org}/{repo}", "--workflow", workflow, "-b", branch,
                         "-L", "30", "--json", fields])
 
     # ---------- Azure (az) ----------
@@ -183,6 +203,14 @@ class Collector:
                 return r["headSha"], f"마지막 swap {swaps[0]['time'][:19]}Z 이전 마지막 성공 배포 run({r['updatedAt']})"
         return None, "마지막 swap 이전 성공 배포 run 을 조회 범위(30건)에서 못 찾음"
 
+    @staticmethod
+    def prod_from_runs(runs):
+        """브랜치 모드 운영 SHA: 운영 브랜치의 마지막 성공 배포 run 의 headSha(머지가 곧 배포인 레포 — Vercel 등)."""
+        for r in runs:
+            if r.get("conclusion") == "success":
+                return r["headSha"], f"운영 브랜치 마지막 성공 배포 run({r['updatedAt']})"
+        return None, "운영 브랜치 성공 배포 run 을 조회 범위(30건)에서 못 찾음"
+
     # ---------- 변경 감지(가벼운 조회) ----------
     def probe_repo(self, rc):
         """레포가 바뀌었는지 싸게 본다: 원격 브랜치 끝 커밋 전체(ls-remote 1회) + 가장 최근 갱신된 PR 시각(API 1회)."""
@@ -192,7 +220,12 @@ class Collector:
         h = hashlib.sha1(refs.encode("utf-8")).hexdigest()[:12]
         pr = gh_json(["api", f"repos/{self.org}/{rc['name']}/pulls?state=all&sort=updated&direction=desc&per_page=1"], timeout=60)
         pr_at = pr[0]["updated_at"] if pr else None
-        return {"refs": h, "pr": pr_at}
+        fp = {"refs": h, "pr": pr_at}
+        if rc.get("prod_branch"):  # 브랜치 모드는 배포 run 이 끝나야 운영이 바뀌므로 마지막 run 상태도 본다
+            run = gh_json(["run", "list", "-R", f"{self.org}/{rc['name']}", "--workflow", rc.get("workflow", "deploy.yml"),
+                           "-b", rc["prod_branch"], "-L", "1", "--json", "updatedAt,status,conclusion"], timeout=60)
+            fp["run"] = f"{run[0]['updatedAt']} {run[0]['status']} {run[0]['conclusion']}" if run else None
+        return fp
 
     def probe_swap(self, app):
         """마지막 성공 swap 시각(활동 기록 1회, 최근 7일만 — 전체 90일은 17초라 감시엔 무겁다)."""
@@ -205,34 +238,41 @@ class Collector:
 
     def collect_repo(self, rc):
         name, app = rc["name"], rc.get("app")
+        stg, prd = rc.get("staging_branch", "deploy/prod"), rc.get("prod_branch")
         t0 = time.time()
-        r = {"name": name, "label": rc.get("label", name), "app": app, "errors": [],
+        r = {"name": name, "label": rc.get("label", name), "app": app, "errors": [], "notes": [],
+             "staging_branch": stg, "prod_branch": prd, "mode": "swap" if app else ("branch" if prd else "none"),
              "web": f"https://github.com/{self.org}/{name}"}
         g = Repo(self.local_path(rc), self.org, name)
-        if not os.path.isdir(os.path.join(g.path, ".git")):
-            r["errors"].append(f"로컬 클론 없음: {g.path}")
-            self.errors.append(f"{name}: 로컬 클론 없음 {g.path}")
+        try:
+            note = g.ensure()
+            if note:
+                r["notes"].append(note)
+                print(f"[collect] {name}: {note}", file=sys.stderr, flush=True)
+        except Exception as e:
+            r["errors"].append(f"로컬 클론 준비 실패({g.path}) — {e}")
+            self.errors.append(f"{name}: 로컬 클론 준비 실패 {e}")
             return r
         try:
             g.fetch()
             r["develop"] = g.head("origin/develop")
-            r["staging"] = g.head("origin/deploy/prod")
-            r["develop_only"] = g.only_in("origin/deploy/prod", "origin/develop", self.keys_of)
+            r["staging"] = g.head(f"origin/{stg}")
+            r["develop_only"] = g.only_in(f"origin/{stg}", "origin/develop", self.keys_of)
             r["branches"] = [b for b in g.branches(self.keys_of) if b["keys"]]
         except Exception as e:
             r["errors"].append(f"git 수집 실패 — {e}")
             self.errors.append(f"{name}: {e}")
             return r
         try:
-            r["runs"] = self.deploy_runs(name, rc.get("workflow", "deploy.yml"))
+            r["runs"] = self.deploy_runs(name, rc.get("workflow", "deploy.yml"), prd or stg)
             r["prs"] = self.prs(name)
         except Exception as e:
             r["errors"].append(f"GitHub 수집 실패 — {e}")
             self.errors.append(f"{name}: {e}")
             return r
         r["swaps"] = []
-        r["prod"] = {"sha": None, "basis": "Azure 앱 미설정"}
-        if app:
+        r["prod"] = {"sha": None, "basis": "Azure 앱도 운영 브랜치도 미설정"}
+        if app:  # swap 모드: 스테이징 브랜치가 staging 슬롯, 운영 = 마지막 swap 이전 성공 run
             try:
                 r["swaps"] = self.swaps(app)
                 sha, basis = self.estimate_prod(r["runs"], r["swaps"])
@@ -241,10 +281,14 @@ class Collector:
             except Exception as e:
                 r["errors"].append(f"Azure 수집 실패 — {e}")
                 self.errors.append(f"{name}: {e}")
+        elif prd:  # 브랜치 모드: 운영 브랜치 머지가 곧 배포, 운영 = 그 브랜치 마지막 성공 run
+            sha, basis = self.prod_from_runs(r["runs"])
+            r["prod"] = {"sha": sha, "basis": basis}
+            r["hosts"] = rc.get("hosts") or {}
         r["staging_only"] = None
         if r["prod"]["sha"]:
             try:
-                r["staging_only"] = g.only_in(r["prod"]["sha"], "origin/deploy/prod", self.keys_of)
+                r["staging_only"] = g.only_in(r["prod"]["sha"], f"origin/{stg}", self.keys_of)
                 r["prod"]["date"] = g.head(r["prod"]["sha"])["date"]
             except Exception as e:
                 r["errors"].append(f"스테이징·운영 비교 실패 — {e}")
@@ -263,6 +307,7 @@ class Collector:
 
         prod_sha = (r.get("prod") or {}).get("sha")
         so = r.get("staging_only")
+        stg, prd = r.get("staging_branch", "deploy/prod"), r.get("prod_branch")
         for b in r["branches"]:
             for k in b["keys"]:
                 i = get(k)
@@ -289,9 +334,9 @@ class Collector:
                 elif p["state"] == "MERGED":
                     if p["baseRefName"] == "develop":
                         i["stages"].add("develop")
-                    elif p["baseRefName"] == "deploy/prod":
+                    elif p["baseRefName"] in (stg, prd):
                         i["stages"].add("staging")
-                        # 머지 커밋이 운영 SHA 에 포함되면 운영 반영
+                        # 머지 커밋이 운영 SHA 에 포함되면 운영 반영(swap 모드는 스테이징 브랜치 = 배포 브랜치)
                         if prod_sha and p["mergeCommit"] and g.is_ancestor(p["mergeCommit"], prod_sha):
                             i["stages"].add("prod")
         out = []

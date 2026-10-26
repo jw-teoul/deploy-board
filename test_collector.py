@@ -70,6 +70,21 @@ class JudgeTest(unittest.TestCase):
         r = repo(develop_only={"commits": [commit("c7", "PILLDOC-7")]})
         self.assertEqual(self.judge(r)["PILLDOC-7"]["stage"], "develop")
 
+    def test_branch_mode_staging_and_prod(self):
+        """브랜치 모드(pillcheck): deploy/dev 머지 = 스테이징, deploy/prod 머지 커밋이 운영 SHA 에 있으면 운영."""
+        r = repo(staging_branch="deploy/dev", prod_branch="deploy/prod", prod={"sha": "P"}, staging_only={"commits": []},
+                 prs=[pr(1, "deploy/dev", "MERGED", "MOBILE-1", merge="m1"), pr(2, "deploy/prod", "MERGED", "MOBILE-2", merge="m2"),
+                      pr(3, "deploy/prod", "MERGED", "MOBILE-3", merge="m3")])
+        j = self.judge(r, FakeGit({("m2", "P")}))
+        self.assertEqual(j["MOBILE-1"]["stage"], "staging")
+        self.assertEqual(j["MOBILE-2"]["stage"], "prod")
+        self.assertEqual(j["MOBILE-3"]["stage"], "staging")   # 머지됐지만 배포 run 이 아직 성공하지 않음
+
+    def test_prod_from_runs(self):
+        runs = [{"conclusion": "failure", "updatedAt": "t2", "headSha": "bad"}, {"conclusion": "success", "updatedAt": "t1", "headSha": "ok"}]
+        self.assertEqual(collector.Collector.prod_from_runs(runs)[0], "ok")
+        self.assertEqual(collector.Collector.prod_from_runs([])[0], None)
+
     def test_estimate_prod(self):
         runs = [{"conclusion": "success", "updatedAt": "2026-10-23T10:00:00Z", "headSha": "new"},
                 {"conclusion": "failure", "updatedAt": "2026-10-22T09:00:00Z", "headSha": "bad"},

@@ -16,6 +16,8 @@
   button.primary { background:var(--acc); color:#fff; border-color:var(--acc) }
   button:disabled { opacity:.5; cursor:default }
   input[type=search] { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; min-width:220px }
+  .order button { font-size:11px; padding:1px 5px; margin-left:2px; border:1px solid var(--line); background:transparent; color:inherit; border-radius:4px; cursor:pointer; opacity:.6 }
+  .order button:hover { opacity:1 }
   select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card) }
   main { padding:14px 16px; max-width:1500px; margin:0 auto }
   .err { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:8px 12px; border-radius:6px; margin-bottom:12px; white-space:pre-wrap; font-size:12px }
@@ -136,7 +138,7 @@
           <li>웹훅(GitHub·Azure 가 바로 알려 주는 방식)은 외부에서 접근되는 주소가 필요해 지금은 쓸 수 없습니다. 나중에 붙이면 즉시 반영됩니다.</li>
           <li>기본 필터는 최근 30일 활동 이슈만 보여 줍니다. 오래된 것은 「전체」로.</li>
         </ul>
-        <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 (웹·API, Azure swap 배포). 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다.</p>
+        <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 · adpssite (Azure swap 배포 — deploy/prod 가 staging 슬롯, 운영은 swap), pillcheckver2frontend (Vercel — deploy/dev 머지가 스테이징, deploy/prod 머지가 곧 운영 배포라 swap 이 없고 「운영」은 운영 브랜치의 마지막 성공 배포 run). 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다. 레포 제목 옆 ▲▼ 로 순서를 바꿀 수 있고 이 브라우저에 기억됩니다.</p>
       </div>
     </div>
   </section>
@@ -148,7 +150,7 @@
 <script>
 const STAGES = ["branch","pr","develop","staging","prod"];
 const LABEL = {branch:"브랜치", pr:"PR", develop:"develop", staging:"스테이징", prod:"운영"};
-const DESC = {branch:"브랜치만 있음(PR 없음)", pr:"PR 열림", develop:"develop 머지", staging:"deploy/prod 머지 (staging 슬롯)", prod:"운영 swap 완료"};
+const DESC = {branch:"브랜치만 있음(PR 없음)", pr:"PR 열림", develop:"develop 머지", staging:"스테이징 브랜치 머지 (swap 대기 또는 스테이징 배포)", prod:"운영 반영 (swap 또는 운영 브랜치 배포)"};
 let STATE = null, POLL = null;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -213,8 +215,24 @@ function render() {
   if (!STATE) return;
   const errs = [...(STATE.errors||[]), ...(STATE.status?.last_error ? [STATE.status.last_error] : [])];
   $("#errors").innerHTML = errs.length ? `<div class="err">${esc(errs.join("\n"))}</div>` : "";
-  $("#repos").innerHTML = (STATE.repos||[]).map(renderRepo).join("");
+  $("#repos").innerHTML = orderedRepos().map(renderRepo).join("");
+  document.querySelectorAll("section.repo .order button").forEach(b => b.onclick = () => moveRepo(b.closest("section").dataset.repo, +b.dataset.mv));
   applyFilter();
+}
+
+// 레포 표시 순서: ▲▼ 로 바꾸고 브라우저에 기억(localStorage repoOrder). 설정에 새로 생긴 레포는 설정 순서대로 뒤에 붙는다.
+function savedOrder() { try { return JSON.parse(localStorage.getItem("repoOrder") || "[]"); } catch { return []; } }
+function orderedRepos() {
+  const repos = STATE.repos || [], saved = savedOrder();
+  const idx = n => { const i = saved.indexOf(n); return i < 0 ? saved.length + repos.findIndex(r => r.name === n) : i; };
+  return [...repos].sort((a, b) => idx(a.name) - idx(b.name));
+}
+function moveRepo(name, dir) {
+  const names = orderedRepos().map(r => r.name), i = names.indexOf(name), j = i + dir;
+  if (i < 0 || j < 0 || j >= names.length) return;
+  [names[i], names[j]] = [names[j], names[i]];
+  try { localStorage.setItem("repoOrder", JSON.stringify(names)); } catch {}
+  render();
 }
 
 // 검색·기간·브랜치 숨김 적용: 이미 그려진 섹션 안의 보드 칩과 픽셀 캔버스만 바꾼다
@@ -265,11 +283,14 @@ function renderRepo(r) {
       <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
       ${r.hosts?.prod ? `<a class="small" href="https://${r.hosts.prod}" target="_blank">운영</a>` : ""}
       ${r.hosts?.staging ? `<a class="small" href="https://${r.hosts.staging}" target="_blank">스테이징</a>` : ""}
-      <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""} ${r.duration_s ?? ""}초</span></div>
+      <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""}${r.notes?.length ? " · " + esc(r.notes.join(" / ")) : ""} ${r.duration_s ?? ""}초</span>
+      <span class="order"><button data-mv="-1" title="위로">▲</button><button data-mv="1" title="아래로">▼</button></span></div>
     <div class="envs">
       ${envBox("develop", r.develop, `→ deploy/prod: ${devOnlyText}`)}
-      ${envBox("스테이징 (deploy/prod)", r.staging, `→ 운영: ${stOnlyText}`)}
-      ${envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
+      ${envBox(`스테이징 (${esc(r.staging_branch||"deploy/prod")})`, r.staging, `→ 운영: ${stOnlyText}`)}
+      ${r.mode === "branch"
+        ? envBox(`운영 (${esc(r.prod_branch)})`, r.prod, r.prod?.sha ? "운영 브랜치 마지막 성공 배포 run (머지 = 배포)" : "성공 배포 run 없음")
+        : envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
     </div>
     ${VIEW() !== "board" ? `<div class="office-wrap"><canvas class="office" data-repo="${r.name}"></canvas></div>` : ""}
     ${VIEW() !== "pixel" ? `<div class="board"></div>` : ""}
@@ -278,7 +299,7 @@ function renderRepo(r) {
       <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}
       <h4>develop 에만(deploy/prod 미반영, cherry-pick 동일 패치 제외)</h4>${commitList(dv)}
       <h4>최근 배포 run (deploy/prod)</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${x.url}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
-      <h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+      ${r.mode === "branch" ? "" : `<h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>`}
     </details>
   </section>`;
 }

@@ -7,6 +7,9 @@
   "repos": [
     {"name": "adminsite",   "app": "AdminSiteLinux-Prod", "workflow": "deploy.yml", "label": "AdminSite"},
     {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site"},
-    {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2"}
+    {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2"},
+    {"name": "adpssite",    "app": "AdpsSiteLinux-Prod",  "workflow": "ci.yml",     "label": "ADPS Site"},
+    {"name": "pillcheckver2frontend", "staging_branch": "deploy/dev", "prod_branch": "deploy/prod", "workflow": "ci.yml", "label": "PillCheck",
+     "hosts": {"staging": "staging.pillchk.com", "prod": "www.pillcheck.co.kr"}}
   ]
 }
