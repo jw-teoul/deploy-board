@@ -1,6 +1,7 @@
 """배포 현황 보드 로컬 서버 — web/ 정적 파일과 data/state.json 을 서빙하고, 수집기를 백그라운드로 돌린다.
 
-실행: python server.py [--port 8765] [--no-collect] [--no-watch] [--check 30] [--swap-check 120]   → http://localhost:8765
+실행: python server.py [--port 8765] [--bind 0.0.0.0] [--no-collect] [--no-watch] [--check 30] [--swap-check 120]   → http://localhost:8765
+`POST /api/refresh` 에 인증이 없으므로 공용 망에서는 `--bind 127.0.0.1` 로 묶는다(README 「주의」).
 
 변경 감시(기본 켜짐): `--check` 초마다 레포별로 가벼운 조회(원격 브랜치 끝 커밋 ls-remote 1회 + 최근 PR 갱신 시각 1회)를 하고,
 `--swap-check` 초마다 Azure 활동 기록에서 마지막 swap 시각을 본다. 바뀐 레포만 다시 수집해 state.json 에 합친다.
@@ -166,6 +167,7 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--bind", default="0.0.0.0", help="수신 주소. 혼자 볼 때는 127.0.0.1 (refresh 엔드포인트에 인증이 없다)")
     ap.add_argument("--no-collect", action="store_true", help="시작할 때 전체 수집하지 않음")
     ap.add_argument("--no-watch", action="store_true", help="변경 감시 끄기")
     ap.add_argument("--check", type=int, default=30, help="레포 변경 확인 간격(초)")
@@ -176,8 +178,8 @@ def main():
         start_refresh()
     if not a.no_watch:
         Watcher(a.check, a.swap_check).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", a.port), Handler)
-    print(f"배포 현황 보드: http://localhost:{a.port}  (감시 {'꺼짐' if a.no_watch else f'{a.check}s / swap {a.swap_check}s'}, Ctrl+C 로 종료)")
+    srv = ThreadingHTTPServer((a.bind, a.port), Handler)
+    print(f"배포 현황 보드: http://localhost:{a.port}  (수신 {a.bind}, 감시 {'꺼짐' if a.no_watch else f'{a.check}s / swap {a.swap_check}s'}, Ctrl+C 로 종료)")
     if a.open:
         webbrowser.open(f"http://localhost:{a.port}")
     try:
