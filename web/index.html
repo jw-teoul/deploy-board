@@ -18,6 +18,13 @@
   input[type=search] { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; min-width:220px }
   .order button { font-size:11px; padding:1px 5px; margin-left:2px; border:1px solid var(--line); background:transparent; color:inherit; border-radius:4px; cursor:pointer; opacity:.6 }
   .order button:hover { opacity:1 }
+  .repo .handle { cursor:grab; color:var(--mute); font-size:16px; user-select:none; padding:0 2px } .repo .handle:active { cursor:grabbing }
+  .repo.dragging { opacity:.35 }
+  .repo.drop-before { box-shadow:0 -4px 0 0 var(--acc) } .repo.drop-after { box-shadow:0 4px 0 0 var(--acc) }
+  .repo .fold { font-size:12px; padding:1px 6px; border:1px solid var(--line); background:transparent; color:inherit; border-radius:4px; cursor:pointer }
+  .repo.collapsed > .head { border-bottom:0 }
+  .repo .summary { font-size:12px; color:var(--mute); display:flex; gap:10px; flex-wrap:wrap }
+  .repo .summary .dot { margin-right:3px; vertical-align:-1px }
   select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card) }
   main { padding:14px 16px; max-width:1500px; margin:0 auto }
   .err { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:8px 12px; border-radius:6px; margin-bottom:12px; white-space:pre-wrap; font-size:12px }
@@ -162,7 +169,8 @@
           <li><b>기간 필터</b>(기본 30일)는 마지막 활동 기준입니다. 오래된 운영 반영 건이 안 보이면 「전체」로 바꿉니다.</li>
           <li><b>제목</b>은 가장 최근 PR 제목, 없으면 커밋 메시지, 없으면 브랜치 끝 커밋 메시지입니다.</li>
           <li>표는 열마다 40개까지 보여 주고 나머지는 「+N개 더」, 픽셀 방은 18자리를 넘으면 「+N 자리 없음」입니다. 검색으로 좁히면 됩니다.</li>
-          <li>검색은 이슈 키와 제목에 대해 부분 일치이며 타이핑이 멈춘 뒤 적용됩니다. 레포 순서는 제목 옆 ▲▼ 로 바꾸고 이 브라우저에 기억됩니다.</li>
+          <li>검색은 이슈 키와 제목에 대해 부분 일치이며 타이핑이 멈춘 뒤 적용됩니다.</li>
+          <li>레포 순서는 제목 왼쪽 손잡이(⠿)를 끌어 다른 레포 위·아래에 놓거나 ▲▼ 로 바꾸고, ▾ 로 레포를 접으면 헤더와 단계별 건수만 남습니다. 순서·접힘은 이 브라우저에 기억됩니다.</li>
         </ul>
       </div>
     </div>
@@ -242,6 +250,8 @@ function render() {
   $("#errors").innerHTML = errs.length ? `<div class="err">${esc(errs.join("\n"))}</div>` : "";
   $("#repos").innerHTML = orderedRepos().map(renderRepo).join("");
   document.querySelectorAll("section.repo .order button").forEach(b => b.onclick = () => moveRepo(b.closest("section").dataset.repo, +b.dataset.mv));
+  document.querySelectorAll("section.repo .fold").forEach(b => b.onclick = () => toggleCollapsed(b.closest("section").dataset.repo));
+  document.querySelectorAll("section.repo").forEach(bindDrag);
   applyFilter();
 }
 
@@ -266,6 +276,8 @@ function applyFilter() {
   for (const sec of document.querySelectorAll("section.repo[data-repo]")) {
     const r = STATE.repos.find(x => x.name === sec.dataset.repo); if (!r?.issues) continue;
     const issues = r.issues.filter(visible);
+    const sum = sec.querySelector(".summary");
+    if (sum) sum.innerHTML = summaryHtml(issues);
     const board = sec.querySelector(".board");
     if (board) {
       board.innerHTML = renderCols(r, issues);
@@ -303,14 +315,16 @@ function renderRepo(r) {
   const devOnlyText = `${dv.length}개 커밋이 develop 에만`;
   const stOnlyText = r.staging_only ? `${so.length}개 커밋이 스테이징에만(운영 미반영)` : "운영 SHA 미확인";
   const commitList = (list) => list.length ? `<ul>${list.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span> <a href="${c.url}" target="_blank">↗</a></li>`).join("")}</ul>` : "<div class='mute'>없음</div>";
-  return `<section class="repo" data-repo="${esc(r.name)}">
-    <div class="head"><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
+  const folded = isCollapsed(r.name);
+  return `<section class="repo${folded ? " collapsed" : ""}" data-repo="${esc(r.name)}">
+    <div class="head"><span class="handle" title="끌어서 순서 변경" draggable="true">⠿</span><button class="fold" title="${folded ? "펴기" : "접기"}">${folded ? "▸" : "▾"}</button><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
+      ${folded ? `<span class="summary"></span>` : ""}
       <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
       ${r.hosts?.prod ? `<a class="small" href="https://${r.hosts.prod}" target="_blank">운영</a>` : ""}
       ${r.hosts?.staging ? `<a class="small" href="https://${r.hosts.staging}" target="_blank">스테이징</a>` : ""}
       <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""}${r.notes?.length ? " · " + esc(r.notes.join(" / ")) : ""} ${r.duration_s ?? ""}초</span>
       <span class="order"><button data-mv="-1" title="위로">▲</button><button data-mv="1" title="아래로">▼</button></span></div>
-    <div class="envs">
+    ${folded ? "" : `<div class="envs">
       ${envBox("develop", r.develop, `→ ${esc(r.staging_branch||"deploy/prod")}: ${devOnlyText}`)}
       ${envBox(`스테이징 (${esc(r.staging_branch||"deploy/prod")})`, r.staging, `→ 운영: ${stOnlyText}`)}
       ${r.mode === "branch"
@@ -325,8 +339,47 @@ function renderRepo(r) {
       <h4>develop 에만(${esc(r.staging_branch||"deploy/prod")} 미반영, cherry-pick 동일 패치 제외)</h4>${commitList(dv)}
       <h4>최근 배포 run (${esc(r.prod_branch||r.staging_branch||"deploy/prod")})</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${x.url}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
       ${r.mode === "branch" ? "" : `<h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>`}
-    </details>
+    </details>`}
   </section>`;
+}
+
+// 레포 접기: 접힌 레포는 헤더와 단계별 건수만 보인다(localStorage collapsed). 캔버스도 만들지 않아 비용이 없다.
+function collapsedSet() { try { return new Set(JSON.parse(localStorage.getItem("collapsed") || "[]")); } catch { return new Set(); } }
+function isCollapsed(name) { return collapsedSet().has(name); }
+function toggleCollapsed(name) {
+  const s = collapsedSet(); s.has(name) ? s.delete(name) : s.add(name);
+  try { localStorage.setItem("collapsed", JSON.stringify([...s])); } catch {}
+  render();
+}
+function summaryHtml(issues) {
+  return STAGES.map(st => `<span><span class="dot" style="background:var(--st-${st})"></span>${LABEL[st]} ${issues.filter(i => i.stage === st).length}</span>`).join("");
+}
+
+// 드래그 앤 드롭 순서 변경: 손잡이(⠿)만 draggable 이라 본문 글자 선택을 방해하지 않는다. 다른 레포의 위·아래 절반에 놓는다. ▲▼ 도 그대로 쓸 수 있다.
+let dragName = null;
+function bindDrag(sec) {
+  const handle = sec.querySelector(".handle");
+  handle.ondragstart = e => {
+    dragName = sec.dataset.repo; sec.classList.add("dragging"); e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", dragName); e.dataTransfer.setDragImage(sec, 20, 20); } catch {}
+  };
+  handle.ondragend = () => { dragName = null; document.querySelectorAll("section.repo").forEach(s => s.classList.remove("dragging", "drop-before", "drop-after")); };
+  sec.ondragover = e => {
+    if (!dragName || dragName === sec.dataset.repo) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = "move";
+    const rc = sec.getBoundingClientRect(), after = e.clientY > rc.top + rc.height / 2;
+    sec.classList.toggle("drop-before", !after); sec.classList.toggle("drop-after", after);
+  };
+  sec.ondragleave = () => sec.classList.remove("drop-before", "drop-after");
+  sec.ondrop = e => {
+    if (!dragName || dragName === sec.dataset.repo) return;
+    e.preventDefault();
+    const rc = sec.getBoundingClientRect(), after = e.clientY > rc.top + rc.height / 2;
+    const names = orderedRepos().map(r => r.name).filter(n => n !== dragName);
+    names.splice(names.indexOf(sec.dataset.repo) + (after ? 1 : 0), 0, dragName);
+    try { localStorage.setItem("repoOrder", JSON.stringify(names)); } catch {}
+    dragName = null; render();
+  };
 }
 
 function openIssue(repo, key) {
