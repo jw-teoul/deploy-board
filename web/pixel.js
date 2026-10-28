@@ -26,10 +26,12 @@
     BOOKSHELF: "assets/furniture/BOOKSHELF/BOOKSHELF.png", COFFEE: "assets/furniture/COFFEE/COFFEE.png", CLOCK: "assets/furniture/CLOCK/CLOCK.png",
     BIN: "assets/furniture/BIN/BIN.png", TABLE: "assets/furniture/TABLE_FRONT/TABLE_FRONT.png",
   };
+  // 서버가 index.html 에 넣어 준 그림 묶음 버전(data-assets). 그림이 바뀌면 주소가 바뀌어 캐시본을 쓰지 않는다.
+  const ASSET_V = (document.currentScript && document.currentScript.dataset.assets) || "";
   let ready = null;
   function load() {
     if (ready) return ready;
-    const one = src => new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
+    const one = src => new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = ASSET_V ? `${src}?v=${ASSET_V}` : src; });
     ready = (async () => {
       IMG.chars = await Promise.all(FILES.chars.map(one));
       IMG.floors = await Promise.all(FILES.floors.map(one));

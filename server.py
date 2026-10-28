@@ -10,6 +10,7 @@
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import threading
@@ -23,6 +24,40 @@ import collector
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
 STATE = os.path.join(HERE, "data", "state.json")
+
+# ---------- 정적 파일 버전(캐시 무효화) ----------
+# index.html 을 내보낼 때 pixel.js 주소에 내용 해시(?v=)를 붙이고, 그림 파일 묶음의 해시를 data-assets 로 넘긴다.
+# 버전이 붙은 요청은 오래 캐시하고, index.html 과 버전 없는 요청은 매번 서버에 확인(no-cache)하게 한다.
+_ver_cache = {}
+
+
+def file_version(path):
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _ver_cache:
+        with open(path, "rb") as f:
+            _ver_cache[key] = hashlib.sha1(f.read()).hexdigest()[:8]
+    return _ver_cache[key]
+
+
+def dir_version(root):
+    h = hashlib.sha1()
+    for base, dirs, files in sorted(os.walk(root)):
+        dirs.sort()
+        for name in sorted(files):
+            full = os.path.join(base, name)
+            h.update(os.path.relpath(full, root).replace(os.sep, "/").encode())
+            h.update(file_version(full).encode())
+    return h.hexdigest()[:8]
+
+
+def render_index():
+    with open(os.path.join(WEB, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    js = file_version(os.path.join(WEB, "pixel.js"))
+    assets = dir_version(os.path.join(WEB, "assets"))
+    return html.replace('<script src="pixel.js"></script>',
+                        f'<script src="pixel.js?v={js}" data-assets="{assets}"></script>', 1)
 
 
 def now():
@@ -130,11 +165,29 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 조용히
         pass
 
+    def end_headers(self):
+        # 정적 파일 응답에 캐시 지시를 붙인다(_json 은 직접 no-store 를 보냄).
+        if not getattr(self, "_cache_set", False):
+            versioned = "v=" in (self.path.split("?", 1)[1] if "?" in self.path else "")
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable" if versioned else "no-cache")
+        self._cache_set = False   # keep-alive 로 같은 핸들러가 다음 요청을 받을 때를 위해 되돌린다
+        super().end_headers()
+
+    def _index(self):
+        body = render_index().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self._cache_set = True
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -150,8 +203,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(data)
         if path == "/api/status":
             return self._json(status)
-        if path == "/":
-            self.path = "/index.html"
+        if path in ("/", "/index.html"):
+            return self._index()
         return super().do_GET()
 
     def do_POST(self):
