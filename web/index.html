@@ -76,6 +76,23 @@
   .spin { display:inline-block; width:12px; height:12px; border:2px solid #cbd5e1; border-top-color:var(--acc); border-radius:50%; animation:sp .8s linear infinite; vertical-align:-2px }
   @keyframes sp { to { transform:rotate(360deg) } }
   @media (max-width:900px) { .board { grid-template-columns:1fr } .col { border-right:0; border-bottom:1px solid var(--line) } .envs { grid-template-columns:1fr } }
+  /* 실행 방법 꼬리표·swap(내 PC 용 --allow-swap 에서만 보임) */
+  .tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; background:#eef2ff; color:#3730a3 }
+  .tag.warn { background:#fef3c7; color:#92400e } .tag.danger { background:#fee2e2; color:#991b1b }
+  .swapctl { display:inline-flex; gap:4px; align-items:center }
+  .swapctl button { font-size:12px; padding:2px 10px; border-color:#dc2626; color:#dc2626 }
+  .swapctl button.undo { border-color:#92400e; color:#92400e }
+  .swapctl button:disabled { pointer-events:none; border-color:var(--line); color:var(--mute) }
+  .swapbusy { font-size:12px; color:#dc2626 }
+  dialog#swapDlg { border:1px solid var(--line); border-radius:10px; padding:18px 20px; width:min(640px, calc(100vw - 32px)); color:var(--ink) }
+  dialog#swapDlg::backdrop { background:rgba(15,23,42,.45) }
+  #swapDlg h3 { margin:0 0 8px; font-size:16px } #swapDlg ul { max-height:200px; overflow:auto; padding-left:18px; font-size:12px; margin:4px 0 }
+  #swapDlg .row { margin:6px 0; font-size:13px } #swapDlg code.cmd { display:block; font-size:11px; background:#f3f4f6; padding:6px 8px; border-radius:6px; word-break:break-all }
+  #swapDlg input { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; width:100% }
+  #swapDlg .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px }
+  #swapDlg button.danger { background:#dc2626; color:#fff; border-color:#dc2626 }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#1f2328; color:#fff; padding:10px 16px; border-radius:8px; font-size:13px; max-width:calc(100vw - 32px); z-index:20; opacity:0; transition:opacity .2s; pointer-events:none; white-space:pre-wrap }
+  #toast.show { opacity:1 } #toast.bad { background:#991b1b }
 </style>
 </head>
 <body>
@@ -83,6 +100,7 @@
   <h1>배포 현황 보드</h1>
   <button id="refresh" class="primary">새로고침</button>
   <span id="collected" class="small mute"></span>
+  <span id="modeTag" class="small"></span>
   <span id="watch" class="small mute" title="서버가 30초마다 레포 변경(브랜치 끝 커밋·PR 갱신)을, 2분마다 Azure swap 을 확인해 바뀐 레포만 다시 수집합니다. 이 화면은 10초마다 서버 상태를 물어 바뀌면 자동 반영합니다."></span>
   <span style="flex:1"></span>
   <input type="search" id="q" placeholder="이슈 키·제목 검색 (예: 2414)">
@@ -135,7 +153,7 @@
       </div>
       <div>
         <h4>정보를 어떻게 모으나</h4>
-        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음).</p>
+        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음). 예외는 하나 — 실행한 사람이 자기 PC 에서 <code>--allow-swap</code> 으로 띄운 화면에만 swap·되돌리기 버튼이 생기고, 누르면 그 사람의 az 권한으로 swap 이 나갑니다. 공유 보드에는 버튼이 없습니다.</p>
         <ol>
           <li><b>git(로컬 클론)</b> — 레포마다 <code>projects/&lt;repo&gt;</code> 클론에서 <code>fetch --prune</code> 뒤 원격 브랜치 전체 목록(이름·끝 커밋·작성자·날짜)과 세 브랜치(develop·스테이징·운영 추정 SHA) 사이 커밋 차이를 봅니다. 차이는 <code>--cherry-pick</code> 비교라 cherry-pick 으로 이미 넘어간 같은 패치는 제외하고, 머지 커밋도 제외합니다. 클론이 없으면 받아 옵니다.</li>
           <li><b>GitHub PR</b> — <code>gh pr list</code> 로 상태 무관 최근 300건(번호·제목·base·머지 커밋·Draft·갱신 시각).</li>
@@ -179,6 +197,11 @@
   <div id="repos"></div>
 </main>
 <aside id="panel"><button id="close" style="float:right">닫기</button><div id="panelBody"></div></aside>
+<dialog id="swapDlg"><div id="swapBody"></div>
+  <div class="row"><label class="small">확인을 위해 앱 이름 <b id="swapApp"></b> 을 그대로 입력하세요<input id="swapConfirm" autocomplete="off" spellcheck="false"></label></div>
+  <div class="actions"><button id="swapCancel">취소 (Esc)</button><button id="swapOk" class="danger" disabled>실행</button></div>
+</dialog>
+<div id="toast" role="status"></div>
 <script src="pixel.js"></script>
 <script>
 const STAGES = ["branch","pr","develop","staging","prod"];
@@ -199,11 +222,31 @@ async function load() {
   trackStatus(STATE.status);
 }
 function trackStatus(st) {
-  const running = st?.running;
+  LAST_ST = st;
+  const running = st?.running, ro = st?.mode === "readonly";
+  $("#refresh").hidden = ro;   // 공유용은 수집하지 않으므로 새로고침 버튼이 없다
   $("#refresh").disabled = !!running;
   $("#refresh").innerHTML = running ? `<span class="spin"></span> 수집 중${st.running_repos ? " (" + st.running_repos.join(", ") + ")" : ""}…` : "새로고침";
   const c = STATE?.collected_at;
   $("#collected").textContent = (c ? `수집 ${fmt(c)} (${ago(c)}, ${STATE.duration_s ?? "?"}초)` : "아직 수집 전") + (st?.last_error ? " · 마지막 수집 오류" : "");
+  const tags = [];
+  if (ro) {
+    tags.push(`<span class="tag" title="이 서버는 수집하지 않고, 수집 PC 가 올려 준 결과만 보여 줍니다. swap 버튼도 없습니다.">공유 보기 전용</span>`);
+    if (c && Date.now() - new Date(c) > 30 * 60000) tags.push(`<span class="tag warn" title="마지막 수집이 30분 넘게 지났습니다. 수집 PC 가 꺼졌거나 올리기에 실패했을 수 있습니다.">수집 PC 꺼짐?</span>`);
+  }
+  if (st?.mode === "swap") tags.push(`<span class="tag danger" title="--allow-swap 으로 띄운 이 PC 전용 화면입니다. swap 은 내 az 로그인 권한으로 실행됩니다.">swap 켜짐${st.swap?.fake ? " (가짜 명령)" : ""}</span>`);
+  const pub = st?.publish;
+  if (pub) tags.push(pub.error ? `<span class="tag warn" title="${esc(pub.error)}">공유 서버 올리기 실패 ${fmt(pub.last)}</span>`
+                               : `<span class="tag" title="${esc(pub.target)}">공유 서버로 올림${pub.ok_at ? " " + fmt(pub.ok_at) : ""}</span>`);
+  $("#modeTag").innerHTML = tags.join(" ");
+  updateSwapCtl(st);
+  const last = st?.swap?.last;
+  if (last && last.id !== LAST_DONE) {
+    if (LAST_DONE !== null) toast(last.ok ? `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 완료 — 그 레포를 다시 수집합니다`
+                                          : `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 실패\n${last.error || ""}`, !last.ok);
+    LAST_DONE = last.id;
+  } else if (LAST_DONE === null) LAST_DONE = last?.id || "";
+  if (ro) { $("#watch").textContent = "수집 PC 에서 올린 결과"; return; }
   const w = st?.watch;
   if (w?.enabled) {
     const ch = Object.entries(w.changes || {}).sort((a, b) => (b[1].at > a[1].at ? 1 : -1))[0];
@@ -211,6 +254,78 @@ function trackStatus(st) {
       + (ch ? ` · 최근 변화 ${ch[0]} ${fmt(ch[1].at)} (${{refs:"커밋", pr:"PR", swap:"swap"}[ch[1].why] || ch[1].why})` : "") + (w.probe_error ? " · 감시 오류" : "");
   } else $("#watch").textContent = "자동 감시 꺼짐";
 }
+// ---------- swap(내 PC 용 --allow-swap 서버에서만. 서버가 status.swap.enabled 를 줄 때만 버튼을 그린다) ----------
+const TOKEN = document.querySelector('meta[name="board-token"]')?.content || "";
+let LAST_ST = null, LAST_DONE = null, SWAP_POLL = null;
+function toast(msg, bad) {
+  const t = $("#toast"); t.textContent = msg; t.classList.toggle("bad", !!bad); t.classList.add("show");
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), bad ? 9000 : 5000);
+}
+function undoOpen(sw, name) { const u = sw?.undo?.[name]; return !!u && new Date(u.until) > Date.now(); }
+// swap 을 막는 이유(없으면 "")
+function swapBlock(r, sw, act) {
+  const perm = sw.perms?.[r.name];
+  if (!perm) return "권한 조회 중";
+  if (!perm.ok) return "swap 권한 없음 — " + perm.reason;
+  if (sw.job) return `다른 swap 진행 중(${sw.job.repo})`;
+  if (act === "undo") return undoOpen(sw, r.name) ? "" : "되돌릴 swap 없음";
+  // swap 은 맞바꾸기라 swap 직후 다시 수집이 끝나기 전에 또 누르면 되돌리기가 된다
+  if (LAST_ST?.running && (!LAST_ST.running_repos || LAST_ST.running_repos.includes(r.name))) return "이 레포를 다시 수집하는 중 — 끝난 뒤 swap";
+  const run = r.runs?.[0];
+  if (run && run.status !== "completed") return "스테이징 배포 run 진행 중 — 끝난 뒤 swap";
+  if (!r.staging_only) return "운영 SHA 미확인 — 나갈 커밋을 셀 수 없음";
+  if (!(r.staging_only.commits || []).length) return "스테이징에만 있는 커밋 없음(보낼 것 없음)";
+  return "";
+}
+function updateSwapCtl(st) {
+  const sw = st?.swap;
+  document.querySelectorAll(".swapctl").forEach(el => {
+    const r = STATE?.repos?.find(x => x.name === el.dataset.repo);
+    if (!r || !sw?.enabled) { el.innerHTML = ""; return; }
+    if (sw.job?.repo === r.name) { el.innerHTML = `<span class="swapbusy"><span class="spin"></span> ${sw.job.action === "undo" ? "되돌리는 중" : "swap 중"}…</span>`; return; }
+    const why = swapBlock(r, sw, "swap");
+    let html = `<span title="${esc(why || "staging → production swap (확인 창이 먼저 뜹니다)")}"><button data-act="swap" ${why ? "disabled" : ""}>swap</button></span>`;
+    if (undoOpen(sw, r.name)) {
+      const u = sw.undo[r.name], uw = swapBlock(r, sw, "undo");
+      html += `<span title="${esc(uw || `이 보드에서 ${fmt(u.at)} 에 한 swap 을 되돌림(${fmt(u.until)} 까지)`)}"><button class="undo" data-act="undo" ${uw ? "disabled" : ""}>되돌리기</button></span>`;
+    }
+    el.innerHTML = html;
+    el.querySelectorAll("button").forEach(b => b.onclick = () => openSwap(r.name, b.dataset.act));
+  });
+}
+function openSwap(repo, act) {
+  const r = STATE.repos.find(x => x.name === repo); if (!r) return;
+  const undo = act === "undo", so = r.staging_only?.commits || [], run = r.runs?.[0];
+  const keys = [...new Set(so.flatMap(c => c.keys || []))];
+  const cmd = `az webapp deployment slot swap -g ${LAST_ST?.swap?.resource_group || "?"} -n ${r.app} --slot staging --target-slot production`;
+  $("#swapBody").innerHTML = `<h3>${undo ? "되돌리기 — 방금 한 swap 을 다시 맞바꿈" : "swap — 스테이징을 운영으로"}</h3>
+    <div class="row">앱 <b>${esc(r.app)}</b> · staging ⇄ production${LAST_ST?.swap?.fake ? ` <span class="tag warn">가짜 명령으로 실행(시험)</span>` : ""}</div>
+    <div class="row small">지금 운영(추정) <code>${short(r.prod?.sha)}</code> · 스테이징 <code>${short(r.staging?.sha)}</code> ${esc(r.staging?.message || "")}</div>
+    <div class="row small">마지막 스테이징 배포 run: ${run ? `${esc(run.conclusion || run.status)} ${fmt(run.updatedAt)} <a href="${run.url}" target="_blank">${esc(run.displayTitle)}</a>` : "없음"}</div>
+    ${undo ? `<div class="row">운영과 스테이징 슬롯을 다시 맞바꿉니다. 방금 나간 커밋이 운영에서 빠지고 이전 운영이 돌아옵니다.</div>`
+           : `<div class="row">운영에 나갈 커밋 ${so.length}개 · 이슈 ${keys.length ? keys.map(jira).join(", ") : "없음"}</div>
+              <ul>${so.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span></li>`).join("")}</ul>`}
+    <div class="row small mute">실행 명령(내 az 로그인으로 실행, Azure 활동 기록에 내 이름으로 남음)</div><code class="cmd">${esc(cmd)}</code>`;
+  $("#swapApp").textContent = r.app;
+  const inp = $("#swapConfirm"), ok = $("#swapOk");
+  inp.value = ""; ok.disabled = true; ok.textContent = undo ? "되돌리기 실행" : "swap 실행";
+  inp.oninput = () => { ok.disabled = inp.value.trim() !== r.app; };
+  ok.onclick = async () => {
+    ok.disabled = true;
+    try {
+      const res = await fetch("/api/swap", {method:"POST", headers:{"Content-Type":"application/json", "X-Board-Token":TOKEN},
+        body: JSON.stringify({repo, action: undo ? "undo" : "swap", info: {prod: r.prod?.sha, staging: r.staging?.sha, commits: so.length, keys}})});
+      const j = await res.json();
+      if (!res.ok || !j.started) { toast(`시작 못 함 — ${j.reason || j.error || res.status}`, true); ok.disabled = false; return; }
+      $("#swapDlg").close(); trackStatus(j.status);
+      clearInterval(SWAP_POLL);
+      SWAP_POLL = setInterval(async () => { try { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); trackStatus(t); if (!t.swap?.job) { clearInterval(SWAP_POLL); SWAP_POLL = null; } } catch {} }, 2000);
+    } catch (e) { toast("요청 실패 — " + e, true); ok.disabled = false; }
+  };
+  $("#swapDlg").showModal(); inp.focus();
+}
+$("#swapCancel").onclick = () => $("#swapDlg").close();
+
 // 서버 상태를 10초마다 묻고, 수집 결과가 바뀌었으면 다시 그린다(캐릭터가 이동한다)
 setInterval(async () => {
   try {
@@ -252,6 +367,7 @@ function render() {
   document.querySelectorAll("section.repo .order button").forEach(b => b.onclick = () => moveRepo(b.closest("section").dataset.repo, +b.dataset.mv));
   document.querySelectorAll("section.repo .fold").forEach(b => b.onclick = () => toggleCollapsed(b.closest("section").dataset.repo));
   document.querySelectorAll("section.repo").forEach(bindDrag);
+  updateSwapCtl(LAST_ST || STATE.status);
   applyFilter();
 }
 
@@ -320,6 +436,7 @@ function renderRepo(r) {
     <div class="head"><span class="handle" title="끌어서 순서 변경" draggable="true">⠿</span><button class="fold" title="${folded ? "펴기" : "접기"}">${folded ? "▸" : "▾"}</button><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
       ${folded ? `<span class="summary"></span>` : ""}
       <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
+      ${r.app ? `<span class="swapctl" data-repo="${esc(r.name)}"></span>` : ""}
       ${r.hosts?.prod ? `<a class="small" href="https://${r.hosts.prod}" target="_blank">운영</a>` : ""}
       ${r.hosts?.staging ? `<a class="small" href="https://${r.hosts.staging}" target="_blank">스테이징</a>` : ""}
       <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""}${r.notes?.length ? " · " + esc(r.notes.join(" / ")) : ""} ${r.duration_s ?? ""}초</span>
@@ -359,6 +476,7 @@ function summaryHtml(issues) {
 let dragName = null;
 function bindDrag(sec) {
   const handle = sec.querySelector(".handle");
+  if (!handle) return;   // 수집 실패 레포 칸에는 손잡이가 없다(없으면 render 가 여기서 멈춰 필터·swap 버튼 갱신이 안 됨)
   handle.ondragstart = e => {
     dragName = sec.dataset.repo; sec.classList.add("dragging"); e.dataTransfer.effectAllowed = "move";
     try { e.dataTransfer.setData("text/plain", dragName); e.dataTransfer.setDragImage(sec, 20, 20); } catch {}

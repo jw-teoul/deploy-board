@@ -3,6 +3,11 @@
 실행: python server.py [--port 8765] [--bind 0.0.0.0] [--no-collect] [--no-watch] [--check 30] [--swap-check 120]   → http://localhost:8765
 `POST /api/refresh` 에 인증이 없으므로 공용 망에서는 `--bind 127.0.0.1` 로 묶는다(README 「주의」).
 
+실행 방법 세 가지(코드 하나, README 「실행 방법」):
+- 기본: 수집·새로고침, swap 없음(읽기만).
+- 공유용 `--readonly`: 수집·감시·새로고침 없이 data/state.json 만 보여 준다. 수집 PC 가 `--publish` 로 올린 파일을 쓴다.
+- 내 PC 용 `--allow-swap`: 127.0.0.1/localhost 바인딩일 때만 켜지고 `--readonly` 와 함께 쓸 수 없다. swap.py 참고.
+
 변경 감시(기본 켜짐): `--check` 초마다 레포별로 가벼운 조회(원격 브랜치 끝 커밋 ls-remote 1회 + 최근 PR 갱신 시각 1회)를 하고,
 `--swap-check` 초마다 Azure 활동 기록에서 마지막 swap 시각을 본다. 바뀐 레포만 다시 수집해 state.json 에 합친다.
 웹훅(GitHub push/PR, Azure Event Grid)은 외부에서 접근되는 주소가 필요해 지금은 쓸 수 없다 — 나중에 붙일 때는
@@ -13,6 +18,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import secrets
+import sys
 import threading
 import time
 import traceback
@@ -20,10 +27,17 @@ import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import collector
+import publish
+import swap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
 STATE = os.path.join(HERE, "data", "state.json")
+SWAP_LOG = os.path.join(HERE, "data", "swap-log.jsonl")
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+# 실행 방법(main 에서 정함). readonly 와 swap 은 함께 켜질 수 없다.
+OPT = {"readonly": False, "swap": None, "publish": None, "token": None, "port": None}
 
 # ---------- 정적 파일 버전(캐시 무효화) ----------
 # index.html 을 내보낼 때 pixel.js 주소에 내용 해시(?v=)를 붙이고, 그림 파일 묶음의 해시를 data-assets 로 넘긴다.
@@ -56,8 +70,11 @@ def render_index():
         html = f.read()
     js = file_version(os.path.join(WEB, "pixel.js"))
     assets = dir_version(os.path.join(WEB, "assets"))
-    return html.replace('<script src="pixel.js"></script>',
+    html = html.replace('<script src="pixel.js"></script>',
                         f'<script src="pixel.js?v={js}" data-assets="{assets}"></script>', 1)
+    if OPT["token"]:  # swap 요청 위조 방어용 토큰 — 이 서버가 내보낸 화면만 안다
+        html = html.replace("</head>", f'<meta name="board-token" content="{OPT["token"]}">\n</head>', 1)
+    return html
 
 
 def now():
@@ -69,6 +86,7 @@ status = {
     "collected_at": None,
     "watch": {"enabled": False, "check_s": 0, "swap_check_s": 0, "last_check": None, "last_swap_check": None,
               "changes": {}, "probe_error": None, "checks": 0},
+    "mode": "local", "swap": {"enabled": False}, "publish": None,
 }
 lock = threading.Lock()
 if os.path.exists(STATE):
@@ -91,6 +109,7 @@ def refresh(only=None):
             state = collector.merge_state(state, STATE)
         collector.write_state(state, STATE)
         status["collected_at"] = state["collected_at"]
+        do_publish()
     except Exception:
         status["last_error"] = traceback.format_exc()[-800:]
     finally:
@@ -98,6 +117,41 @@ def refresh(only=None):
             status.update(running=False, running_repos=None, finished_at=now())
             status["runs"] += 1
     return True
+
+
+def do_publish():
+    """--publish 대상이 있으면 방금 쓴 state.json 을 올린다(실패는 화면 꼬리표로)."""
+    if not OPT["publish"]:
+        return
+    err = publish.publish(OPT["publish"], STATE)
+    status["publish"].update(last=now(), error=err)
+    if not err:
+        status["publish"]["ok_at"] = status["publish"]["last"]
+
+
+_state_mtime = [None]
+
+
+def sync_collected_at():
+    """공유용: 수집 PC 가 올린 state.json 이 바뀌었으면 collected_at 을 다시 읽는다(화면이 이걸 보고 다시 그린다)."""
+    try:
+        m = os.stat(STATE).st_mtime_ns
+    except OSError:
+        return
+    if m != _state_mtime[0]:
+        try:
+            with open(STATE, encoding="utf-8") as f:
+                status["collected_at"] = json.load(f).get("collected_at")
+            _state_mtime[0] = m
+        except Exception:
+            pass   # 바꿔 끼우는 순간이면 다음에 다시
+
+
+def after_swap(repo):
+    """swap 이 끝나면 그 레포만 다시 수집한다(수집 중이면 끝날 때까지 기다림)."""
+    while status["running"]:
+        time.sleep(1)
+    refresh([repo])
 
 
 def start_refresh(only=None):
@@ -202,17 +256,44 @@ class Handler(SimpleHTTPRequestHandler):
             data["status"] = status
             return self._json(data)
         if path == "/api/status":
+            if OPT["readonly"]:
+                sync_collected_at()
             return self._json(status)
         if path in ("/", "/index.html"):
             return self._index()
         return super().do_GET()
 
+    def _body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(length) or b"{}") if length else {}
+
+    def _swap_guard(self):
+        """swap 요청은 이 PC 의 이 화면에서 온 것만 받는다: 접속 주소 loopback, Host·Origin 이 127.0.0.1/localhost:포트, 토큰 일치."""
+        hosts = {f"{h}:{OPT['port']}" for h in ("127.0.0.1", "localhost", "[::1]")}
+        origin = self.headers.get("Origin")
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            return "이 PC 에서 온 요청만 받음"
+        if self.headers.get("Host", "") not in hosts or (origin and origin not in {"http://" + h for h in hosts}):
+            return "Host·Origin 불일치"
+        if not secrets.compare_digest(self.headers.get("X-Board-Token", ""), OPT["token"] or ""):
+            return "토큰 불일치(화면을 새로고침)"
+        return None
+
     def do_POST(self):
         path = self.path.split("?", 1)[0]
+        if path == "/api/swap":
+            if not OPT["swap"]:
+                return self._json({"error": "swap 이 꺼진 서버(--allow-swap 으로 이 PC 에서만 켬)"}, 403)
+            bad = self._swap_guard()
+            if bad:
+                return self._json({"error": bad}, 403)
+            body = self._body()
+            ok, why = OPT["swap"].start(body.get("repo"), body.get("action"), body.get("info"))
+            return self._json({"started": ok, "reason": why, "status": status}, 202 if ok else 409)
+        if path == "/api/refresh" and OPT["readonly"]:
+            return self._json({"error": "보기 전용 서버 — 수집은 수집 PC 에서 한다"}, 403)
         if path == "/api/refresh":
-            length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
-            started = start_refresh(body.get("repos"))
+            started = start_refresh(self._body().get("repos"))
             return self._json({"started": started, "status": status}, 202 if started else 409)
         self._json({"error": "not found"}, 404)
 
@@ -226,13 +307,37 @@ def main():
     ap.add_argument("--check", type=int, default=30, help="레포 변경 확인 간격(초)")
     ap.add_argument("--swap-check", type=int, default=120, help="Azure swap 확인 간격(초)")
     ap.add_argument("--open", action="store_true", help="브라우저 열기")
+    ap.add_argument("--readonly", action="store_true", help="공유용 보기 전용: 수집·감시·새로고침 없이 data/state.json 만 보여 줌")
+    ap.add_argument("--allow-swap", action="store_true", help="내 PC 용: swap·되돌리기 버튼 켜기(127.0.0.1/localhost 바인딩일 때만)")
+    ap.add_argument("--publish", metavar="대상", help="수집할 때마다 state.json 을 올릴 곳(예 datacrawler:deploy-board/data/state.json)")
     a = ap.parse_args()
+    if a.readonly and (a.allow_swap or a.publish):
+        sys.exit("--readonly 는 --allow-swap·--publish 와 함께 쓸 수 없다(공유 서버에서는 swap·수집을 하지 않는다)")
+    if a.allow_swap and a.bind not in LOOPBACK:
+        sys.exit("--allow-swap 은 이 PC 에서만 쓴다: --bind 127.0.0.1 을 함께 준다")
+    OPT["port"] = a.port
+    if a.readonly:
+        OPT["readonly"] = True
+        status["mode"] = "readonly"
+        a.no_collect = a.no_watch = True
+        sync_collected_at()
+    if a.publish:
+        OPT["publish"] = a.publish
+        status["publish"] = {"target": a.publish, "last": None, "ok_at": None, "error": None}
+        threading.Thread(target=do_publish, daemon=True).start()   # 지금 가진 state 부터 한 번 올린다
+    if a.allow_swap:
+        OPT["token"] = secrets.token_urlsafe(24)
+        OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap)
+        status["mode"] = "swap"
+        status["swap"] = OPT["swap"].status
+        threading.Thread(target=OPT["swap"].perm_loop, daemon=True).start()
     if not a.no_collect:
         start_refresh()
     if not a.no_watch:
         Watcher(a.check, a.swap_check).start()
     srv = ThreadingHTTPServer((a.bind, a.port), Handler)
-    print(f"배포 현황 보드: http://localhost:{a.port}  (수신 {a.bind}, 감시 {'꺼짐' if a.no_watch else f'{a.check}s / swap {a.swap_check}s'}, Ctrl+C 로 종료)")
+    mode = {"readonly": "공유용 보기 전용", "swap": "내 PC 용 swap 켜짐", "local": "기본(읽기만)"}[status["mode"]]
+    print(f"배포 현황 보드 [{mode}]: http://localhost:{a.port}  (수신 {a.bind}, 감시 {'꺼짐' if a.no_watch else f'{a.check}s / swap {a.swap_check}s'}, Ctrl+C 로 종료)")
     if a.open:
         webbrowser.open(f"http://localhost:{a.port}")
     try:

@@ -1,21 +1,53 @@
 # 배포 현황 보드 (deploy-board)
 
-웹·API 레포의 **develop → 스테이징(deploy/prod) → 운영(swap)** 상태와, **Jira 작업(이슈 키)별로 지금 어느 단계인지**를 한 화면에서 본다. 토이 프로젝트 — 로컬 PC 에서 돌리는 용도이고 배포하지 않는다. AI 는 쓰지 않는다(git·gh·az CLI 조회와 정규식뿐).
+웹·API 레포의 **develop → 스테이징(deploy/prod) → 운영(swap)** 상태와, **Jira 작업(이슈 키)별로 지금 어느 단계인지**를 한 화면에서 본다. 토이 프로젝트 — 수집은 각자 PC 에서 하고, 결과 파일만 개발 서버의 보기 전용 보드로 올려 공유할 수 있다. AI 는 쓰지 않는다(git·gh·az CLI 조회와 정규식뿐).
 
-## 실행
+## 실행 방법 — 코드는 하나, 실행 방법은 셋
+| 실행 방법 | 명령 | 수집 | 새로고침 | swap |
+|---|---|---|---|---|
+| 기본 | `python server.py` | 함 | 됨 | 없음 |
+| 공유용(개발 서버) | `python3 server.py --readonly --port 8790` | 안 함(올려 준 결과만 보여 줌) | 안 됨(403) | 없음(403) |
+| 내 PC 용 | `python server.py --allow-swap --bind 127.0.0.1` | 함 | 됨 | 있음 |
+
+- 코드에서 막는 것: `--readonly` 를 `--allow-swap`·`--publish` 와 같이 주면 시작하지 않는다. `--allow-swap` 은 `--bind` 가 127.0.0.1·localhost·::1 일 때만 시작한다(기본 0.0.0.0 이면 거부). 화면은 서버가 swap 을 켰다고 알려 줄 때만 버튼을 그린다.
+- 헤더 꼬리표로 지금 실행 방법을 보여 준다: 「공유 보기 전용」(30분 넘게 안 올라오면 「수집 PC 꺼짐?」), 「swap 켜짐」, 「공유 서버로 올림」.
+- 수집 결과를 공유 서버에 올리려면 수집하는 PC 에서 `--publish datacrawler:deploy-board/data/state.json` 을 붙인다(수집이 끝날 때마다 ssh 로 임시 파일에 쓴 뒤 바꿔 끼운다). 로컬 경로도 된다. 따로 한 번만: `python publish.py <대상>`.
+
 ```
-python server.py            # 시작하면서 수집, 변경 감시 켜짐 → http://localhost:8765
 python server.py --no-collect --open --check 30 --swap-check 120   # --no-watch 로 감시 끄기
-python server.py --bind 127.0.0.1      # 이 PC 에서만 접속(아래 「주의」)
 python collector.py --repo adminsite   # 수집만(서버 없이) → data/state.json
-python -m unittest test_collector      # 단계 판정 테스트
+python -m unittest test_collector test_swap   # 단계 판정·swap 권한 판정 테스트
 ```
-전제: 이 PC 에 `gh`(GitHub 로그인)·`az`(Azure 로그인, Reader)·`git` 이 있고, `../projects/<repo>` 에 기준 클론이 있다(수집기는 `git fetch` 만 하고 checkout 하지 않는다).
+전제(수집하는 PC): `gh`(GitHub 로그인)·`az`(Azure 로그인, Reader)·`git` 이 있고, `../projects/<repo>` 에 기준 클론이 있다(수집기는 `git fetch` 만 하고 checkout 하지 않는다). 공유 서버에는 Python 3 만 있으면 된다.
 
 ## 주의 — 내 계정으로 나가는 요청
-- 수집은 **실행한 사람의 `gh`·`az`·SSH 자격 증명**으로 돈다. 호출은 전부 읽기(git fetch/ls-remote/log, gh pr list·run list·GET pulls, az account show·activity-log list·webapp show·slot list)이고 쓰기·삭제·swap 실행은 없다. 변경 감시가 켜져 있으면 실측 시간당 GitHub REST 약 250건, Azure 읽기 약 90건, 레포당 `ls-remote` 약 85회가 계속 나간다(한도의 5% 아래).
+- 수집은 **실행한 사람의 `gh`·`az`·SSH 자격 증명**으로 돈다. 기본·공유용 실행에서 호출은 전부 읽기(git fetch/ls-remote/log, gh pr list·run list·GET pulls, az account show·activity-log list·webapp show·slot list·권한 조회)이고 쓰기·삭제·swap 실행은 없다. **쓰기는 `--allow-swap` 으로 띄우고 화면에서 직접 확인한 swap·되돌리기 하나뿐이다.**
+- 공유 서버에는 Azure·GitHub 로그인과 토큰을 두지 않는다. 공유용 실행은 수집하지 않으므로 필요 없다. 변경 감시가 켜져 있으면 실측 시간당 GitHub REST 약 250건, Azure 읽기 약 90건, 레포당 `ls-remote` 약 85회가 계속 나간다(한도의 5% 아래).
 - 서버는 **모든 주소(0.0.0.0)에 열리고 인증이 없다.** `POST /api/refresh` 를 같은 망의 누구나 부를 수 있고, 그러면 수집이 내 계정으로 돈다(실행 중이면 409 로 거절하므로 최대 70초에 한 번). 혼자 볼 때는 상관없지만 남에게 주소를 알려 주거나 공용 망에서 띄울 때는 `--bind 127.0.0.1` 로 묶거나 방화벽으로 8765 를 막는다. 외부 접근 주소에는 그대로 올리지 않는다.
-- `data/state.json` 에는 브랜치·커밋 메시지·PR 제목·swap 실행자 이메일이 들어 있다. gitignore 되어 있으니 레포에 올리지 말고, 공유할 때도 이 점을 안다.
+- `data/state.json` 에는 브랜치·커밋 메시지·PR 제목·swap 실행자 이메일이 들어 있다. gitignore 되어 있으니 레포에 올리지 말고, 공유 서버로 올릴 때도 같은 망 사람이 보게 된다는 점을 안다.
+
+## swap (내 PC 용 `--allow-swap`)
+- 시작할 때와 1시간마다 앱별로 내 권한을 조회한다(`GET {site}/providers/Microsoft.Authorization/permissions` — 역할마다 `actions` 에 맞고 `notActions` 에 안 걸리면 허용, 역할끼리는 합집합). 권한이 없으면 버튼이 꺼지고 툴팁(Tooltip, 마우스를 올리면 뜨는 짧은 설명)에 이유가 보인다.
+- 버튼은 이럴 때 꺼진다: 권한 없음, 다른 swap 진행 중, 스테이징 배포 run 진행 중, 운영 SHA 미확인, 스테이징에만 있는 커밋 없음, 그 레포를 다시 수집하는 중.
+- swap 을 누르면 모달 다이얼로그(Modal Dialog, 뒤 화면을 막고 확인을 받는 창)가 열려 운영·스테이징 SHA, 나갈 커밋·이슈 키, 실행 명령을 보여 준다. 앱 이름을 그대로 입력해야 실행 버튼이 켜지고 Esc 로 닫힌다. 실행: `az webapp deployment slot swap -g <리소스 그룹> -n <앱> --slot staging --target-slot production`(15분 제한).
+- 끝나면 토스트(Toast, 잠깐 떴다 사라지는 알림)로 결과를 알리고 그 레포만 다시 수집한다. 이 보드에서 한 swap 은 30분 동안 「되돌리기」(같은 명령으로 다시 맞바꿈)가 보인다.
+- 모든 실행은 `data/swap-log.jsonl` 에 남는다(누가·언제·무엇을·결과). Azure 활동 기록에도 내 이름으로 남는다.
+- 다른 사이트·다른 PC 에서 swap 요청을 못 보내게 막는다: 127.0.0.1 바인딩 + 접속 주소 loopback 확인 + Host·Origin 확인 + 시작할 때 만든 토큰(화면에만 심고 `X-Board-Token` 헤더로 받음).
+- 시험은 실제 az 대신 가짜 명령으로 한다: `DEPLOY_BOARD_SWAP_CMD='python -c "import time;time.sleep(3)"' python server.py --allow-swap --bind 127.0.0.1`. 헤더에 「swap 켜짐 (가짜 명령)」이 보인다.
+
+## 공유 서버(개발 서버) 설치·갱신·끄기
+개발 서버 `edbdev-ubuntu22-svr`(ssh 별칭 `datacrawler`)에 systemd 사용자 서비스로 띄운다. 8765 는 다른 프로그램이 쓰고 있어 8790 을 쓴다.
+```
+# 설치(한 번)
+ssh datacrawler 'git clone https://github.com/jw-teoul/deploy-board.git ~/deploy-board && mkdir -p ~/.config/systemd/user && cp ~/deploy-board/deploy/deploy-board.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now deploy-board'
+# 수집 PC 에서 결과 올리며 띄우기
+python server.py --publish datacrawler:deploy-board/data/state.json
+# 코드 갱신
+ssh datacrawler 'cd ~/deploy-board && git pull --ff-only && systemctl --user restart deploy-board'
+# 상태·끄기
+ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl --user disable --now deploy-board
+```
+보는 주소: `http://192.168.0.61:8790`(사내망). 수집 PC 가 꺼지면 마지막으로 올린 결과가 그대로 보이고 헤더에 「수집 PC 꺼짐?」이 뜬다.
 - `repos.json` 에는 조직·리소스 그룹·앱 이름이 있다. 비밀값은 아니지만 공개 레포에서는 드러난다.
 
 ## 화면
