@@ -14,7 +14,7 @@
 - 수집 결과를 공유 서버에 올리려면 수집하는 PC 에서 `--publish datacrawler:deploy-board/data/state.json` 을 붙인다(수집이 끝날 때마다 ssh 로 임시 파일에 쓴 뒤 바꿔 끼운다). 로컬 경로도 된다. 따로 한 번만: `python publish.py <대상>`.
 
 ```
-python server.py --no-collect --open --check 30 --swap-check 120   # --no-watch 로 감시 끄기
+python server.py --no-collect --open --check 30 --swap-check 60   # --no-watch 로 감시 끄기
 python collector.py --repo adminsite   # 수집만(서버 없이) → data/state.json
 python -m unittest   # 단계 판정·swap 권한 판정·화면 보안 헤더 테스트(test_*.py)
 node test_weblogin.js                         # 웹 로그인 권한 판정(perm_cases.json 을 Python 과 같이 씀)
@@ -40,7 +40,7 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
 ## 웹 로그인 swap (기본·공유용 — 각자 Microsoft 계정)
 - 헤더의 「Microsoft 로그인」 버튼을 누르면 회사 Microsoft(Entra) 로그인 화면으로 넘어갔다가 돌아온다(인가 코드 + PKCE, MSAL.js `web/vendor/msal-browser.min.js` v5.26.0 을 파일로 둠, CDN 안 씀). 돌아오면 헤더에 이름과 「로그아웃」이 보인다.
 - 로그인하면 브라우저가 앱별로 그 사람의 권한을 조회하고(위와 같은 permissions API·같은 판정 규칙), 권한이 있는 앱만 swap 버튼이 켜진다. 꺼지는 조건·모달 다이얼로그·앱 이름 입력 확인·30분 되돌리기는 위 절과 같다.
-- 실행하면 브라우저가 ARM 에 직접 `POST {site}/slots/staging/slotsswap?api-version=2023-12-01 {"targetSlot":"production","preserveVnet":true}` 를 보내고, 202 의 작업 주소(못 읽으면 사이트의 `slotSwapStatus.timestampUtc` 변화)를 5초마다 15분까지 확인한 뒤 토스트로 결과를 알린다. 보드 화면은 수집 PC 가 swap 을 감지해 다시 수집한 뒤 바뀐다. Azure 활동 기록에 swap 이 몇 분 늦게 올라와 보통 3~5분 걸리고(11-05 첫 실제 swap 은 5분), 그동안 카드에 「보드 반영 대기 중」이 보이고 swap 버튼은 꺼진다(서버 swap 도 같음, 30분 지나면 풀림).
+- 실행하면 브라우저가 ARM 에 직접 `POST {site}/slots/staging/slotsswap?api-version=2023-12-01 {"targetSlot":"production","preserveVnet":true}` 를 보내고, 202 의 작업 주소(못 읽으면 사이트의 `slotSwapStatus.timestampUtc` 변화)를 5초마다 15분까지 확인한 뒤 토스트로 결과를 알린다. 보드 화면은 수집 PC 가 swap 을 감지해 다시 수집한 뒤 바뀐다. 사이트 swap 상태를 1분마다 봐서 보통 1~2분 걸리고(활동 기록만 보던 11-05 첫 실제 swap 은 5분), 그동안 카드에 「보드 반영 대기 중」이 보이고 swap 버튼은 꺼진다(서버 swap 도 같음, 30분 지나면 풀림).
 - **토큰은 그 브라우저의 sessionStorage 에만 있고 보드 서버로 보내지 않는다.** 서버에는 Azure 로그인·토큰이 없다. 기록은 Azure 활동 기록에 그 사람 이름으로 남는다(`data/swap-log.jsonl` 에는 안 남음). 되돌리기 정보는 그 브라우저 localStorage `webUndo:<계정>` 에 30분.
 - 웹 swap 이 끝나면 보드가 그 swap 을 반영할 때까지(레포의 마지막 swap 시각이 이번 swap 뒤가 될 때까지) 같은 레포의 swap 버튼을 막고 되돌리기만 허용한다(낡은 「나갈 커밋」으로 다시 눌러 방금 swap 을 뒤집지 않게). 진행 중 swap 은 localStorage 로 같은 브라우저의 다른 탭과 나누고, 새로고침해도 swap 시각으로 이어서 기다린다. 되돌리기 전에는 그 사이 다른 swap 이 없었는지 사이트의 swap 시각으로 확인한다.
 - 기다리는 중에 로그인이 만료돼도 화면을 떠나지 않는다(다시 로그인 화면으로 넘어가면 결과·되돌리기 기록을 잃음). 토큰은 ARM 주소(`https://management.azure.com/`)로만 보낸다.
@@ -91,7 +91,7 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 ## 변경 감시(거의 실시간)
 서버가 켜져 있으면 기본으로 돈다(`--no-watch` 로 끔).
 - 30초마다(`--check`) 레포별로 가벼운 조회 2건 — `git ls-remote --heads origin`(브랜치 끝 커밋 전체 1회)과 가장 최근 갱신된 PR 시각(API 1회). 지난번과 다르면 그 레포만 다시 수집해 `state.json` 에 합친다(`merge_state`).
-- 2분마다(`--swap-check`) Azure 활동 기록(최근 7일, 앱당 약 8초)에서 마지막 swap 시각을 보고 바뀌면 그 레포를 다시 수집한다.
+- 1분마다(`--swap-check`) 리소스 그룹 사이트의 마지막 swap 시각(slotSwapStatus, az 1회 약 5~9초)을 보고 바뀌면 그 레포를 다시 수집한다. 이 값은 활동 기록(3~5분 늦음)보다 빨라서, 활동 기록에 아직 없는 swap 은 「잠정」으로 운영 SHA 를 추정하고 카드에 표시한다. 활동 기록에 확정이 올라오면(감시가 앱 활동 기록을 확인, 최대 15분) 다시 수집해 잠정을 푼다.
 - 화면은 10초마다 `/api/status` 를 물어 `collected_at` 이 바뀌면 다시 그린다 → 단계가 바뀐 캐릭터가 걸어간다.
 - 비용(실측, 레포 3개): tick 이 30초 대기 + 약 13초 조회라 실제 간격은 약 43초. 변화가 없을 때 시간당 GitHub REST 약 250건 + ls-remote 약 250회, Azure 약 90건. 한도(GitHub 5,000/h, Azure 12,000/h)의 5% 아래.
 

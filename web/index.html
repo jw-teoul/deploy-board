@@ -84,6 +84,7 @@
   .swapctl button.undo { border-color:#92400e; color:#92400e }
   .swapctl button:disabled { pointer-events:none; border-color:var(--line); color:var(--mute) }
   .swapbusy { font-size:12px; color:#dc2626 }
+  .tentative { font-size:12px; color:#92400e; background:#fef3c7; border-radius:999px; padding:1px 8px }
   .swapwait { font-size:12px; color:#92400e; background:#fef3c7; border-radius:999px; padding:1px 8px }
   dialog#swapDlg { border:1px solid var(--line); border-radius:10px; padding:18px 20px; width:min(640px, calc(100vw - 32px)); color:var(--ink) }
   dialog#swapDlg::backdrop { background:rgba(15,23,42,.45) }
@@ -166,7 +167,7 @@
       </div>
       <div>
         <h4>정보를 어떻게 모으나</h4>
-        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음). 예외는 하나 — 실행한 사람이 자기 PC 에서 <code>--allow-swap</code> 으로 띄운 화면에만 swap·되돌리기 버튼이 생기고, 누르면 그 사람의 az 권한으로 swap 이 나갑니다. 공유 보드에서는 헤더의 「Microsoft 로그인」으로 로그인한 사람에게만, 그 사람 계정에 swap 권한이 있는 앱에만 버튼이 생깁니다. 이때 swap 은 브라우저가 Azure 에 직접 보내고(토큰은 그 브라우저 탭에만 있고 보드 서버로 가지 않음), 결과는 수집 PC 가 감지해 다시 수집합니다. Azure 활동 기록에 swap 이 몇 분 늦게 올라와서 보드 반영까지 보통 3~5분 걸리고, 그동안 카드에 「보드 반영 대기 중」이 보이며 swap 버튼은 꺼집니다.</p>
+        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음). 예외는 하나 — 실행한 사람이 자기 PC 에서 <code>--allow-swap</code> 으로 띄운 화면에만 swap·되돌리기 버튼이 생기고, 누르면 그 사람의 az 권한으로 swap 이 나갑니다. 공유 보드에서는 헤더의 「Microsoft 로그인」으로 로그인한 사람에게만, 그 사람 계정에 swap 권한이 있는 앱에만 버튼이 생깁니다. 이때 swap 은 브라우저가 Azure 에 직접 보내고(토큰은 그 브라우저 탭에만 있고 보드 서버로 가지 않음), 결과는 수집 PC 가 1분마다 사이트의 swap 상태를 보고 감지해 다시 수집합니다. 보드 반영까지 보통 1~2분이고, 그동안 카드에 「보드 반영 대기 중」이 보이며 swap 버튼은 꺼집니다. Azure 활동 기록은 3~5분 늦게 올라와서, 그 전까지는 운영 칸에 「잠정」이 붙습니다.</p>
         <ol>
           <li><b>git(로컬 클론)</b> — 레포마다 <code>projects/&lt;repo&gt;</code> 클론에서 <code>fetch --prune</code> 뒤 원격 브랜치 전체 목록(이름·끝 커밋·작성자·날짜)과 세 브랜치(develop·스테이징·운영 추정 SHA) 사이 커밋 차이를 봅니다. 차이는 <code>--cherry-pick</code> 비교라 cherry-pick 으로 이미 넘어간 같은 패치는 제외하고, 머지 커밋도 제외합니다. 클론이 없으면 받아 옵니다.</li>
           <li><b>GitHub PR</b> — <code>gh pr list</code> 로 상태 무관 최근 300건(번호·제목·base·머지 커밋·Draft·갱신 시각).</li>
@@ -266,7 +267,7 @@ function trackStatus(st) {
   showAccounts(st);
   const last = st?.swap?.last;
   if (last && last.id !== LAST_DONE) {
-    if (LAST_DONE !== null) toast(last.ok ? `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 완료 — 보드 반영까지 보통 3~5분(Azure 활동 기록이 늦게 올라옴)`
+    if (LAST_DONE !== null) toast(last.ok ? `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 완료 — 보드 반영까지 보통 1~2분`
                                           : `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 실패\n${last.error || ""}`, !last.ok);
     LAST_DONE = last.id;
   } else if (LAST_DONE === null) LAST_DONE = last?.id || "";
@@ -298,7 +299,8 @@ function undoOpen(sw, name) { const u = sw?.undo?.[name]; return !!u && new Date
 function swapPending(r, sw) {
   const p = sw?.web ? sw.pending?.[r.name] : (sw?.last?.ok && sw.last.repo === r.name ? sw.last : null);
   if (!p || Date.now() - new Date(p.finished_at) > 30 * 60000) return null;
-  const seen = r.swaps?.[0]?.time && new Date(r.swaps[0].time) >= new Date(p.started_at) - 60000;
+  const t = [r.pending_swap?.time, r.swaps?.[0]?.time].filter(Boolean).map(x => new Date(x)).sort((a, b) => b - a)[0];  // 잠정 swap 도 반영으로 본다
+  const seen = t && t >= new Date(p.started_at) - 15000;   // 앞 swap 기록을 이번 것으로 오인하지 않게 허용폭은 시계 오차만큼
   return seen ? null : p;
 }
 // swap 을 막는 이유(없으면 "")
@@ -309,7 +311,7 @@ function swapBlock(r, sw, act) {
   if (sw.job) return `다른 swap 진행 중(${sw.job.repo})`;
   if (act === "undo") return undoOpen(sw, r.name) ? "" : "되돌릴 swap 없음";
   const pend = swapPending(r, sw);
-  if (pend) return `방금 ${pend.action === "undo" ? "되돌리기" : "swap"} 함(${fmt(pend.finished_at)}) — 보드에 반영된 뒤 swap(Azure 활동 기록이 늦게 올라와 보통 3~5분)`;
+  if (pend) return `방금 ${pend.action === "undo" ? "되돌리기" : "swap"} 함(${fmt(pend.finished_at)}) — 보드에 반영된 뒤 swap(보통 1~2분)`;
   // swap 은 맞바꾸기라 swap 직후 다시 수집이 끝나기 전에 또 누르면 되돌리기가 된다
   if (LAST_ST?.running && (!LAST_ST.running_repos || LAST_ST.running_repos.includes(r.name))) return "이 레포를 다시 수집하는 중 — 끝난 뒤 swap";
   const run = r.runs?.[0];
@@ -331,7 +333,7 @@ function updateSwapCtl(st) {
       html += `<span title="${esc(uw || `이 ${sw.web ? "브라우저" : "보드"}에서 ${fmt(u.at)} 에 한 swap 을 되돌림(${fmt(u.until)} 까지)`)}"><button class="undo" data-act="undo" ${uw ? "disabled" : ""}>되돌리기</button></span>`;
     }
     const pend = swapPending(r, sw);
-    if (pend) html += `<span class="swapwait" title="${esc(`${fmt(pend.finished_at)} 에 ${pend.action === "undo" ? "되돌리기" : "swap"} 완료. Azure 활동 기록에 swap 이 몇 분 늦게 올라와서, 그 전까지 이 카드는 swap 전 상태를 보여 줍니다.`)}">보드 반영 대기 중(보통 3~5분)</span>`;
+    if (pend) html += `<span class="swapwait" title="${esc(`${fmt(pend.finished_at)} 에 ${pend.action === "undo" ? "되돌리기" : "swap"} 완료. 수집 PC 가 swap 을 감지해 다시 수집할 때까지 이 카드는 swap 전 상태를 보여 줍니다.`)}">보드 반영 대기 중(보통 1~2분)</span>`;
     el.innerHTML = html;
     el.querySelectorAll("button").forEach(b => b.onclick = () => openSwap(r.name, b.dataset.act));
   });
@@ -567,7 +569,9 @@ function renderRepo(r) {
       ${envBox(`스테이징 (${esc(r.staging_branch||"deploy/prod")})`, r.staging, `→ 운영: ${stOnlyText}`)}
       ${r.mode === "branch"
         ? envBox(`운영 (${esc(r.prod_branch)})`, r.prod, r.prod?.sha ? "운영 브랜치 마지막 성공 배포 run (머지 = 배포)" : "성공 배포 run 없음")
-        : envBox("운영 (추정)", r.prod, swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
+        : envBox("운영 (추정)", r.prod, r.pending_swap
+            ? `마지막 swap ${fmt(r.pending_swap.time)} <span class="tentative" title="사이트의 swap 상태로 먼저 반영했습니다. Azure 활동 기록(누가 했는지 포함)은 3~5분 늦게 올라오고, 올라오면 확정으로 바뀝니다.">잠정 — Azure 기록 확인 전</span>`
+            : swap ? `마지막 swap ${fmt(swap.time)} ${esc(swap.who||"")}` : "swap 기록 없음")}
     </div>
     ${VIEW() !== "board" ? `<div class="office-wrap"><canvas class="office" data-repo="${r.name}"></canvas></div>` : ""}
     ${VIEW() !== "pixel" ? `<div class="board"></div>` : ""}
@@ -576,7 +580,7 @@ function renderRepo(r) {
       <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}
       <h4>develop 에만(${esc(r.staging_branch||"deploy/prod")} 미반영, cherry-pick 동일 패치 제외)</h4>${commitList(dv)}
       <h4>최근 배포 run (${esc(r.prod_branch||r.staging_branch||"deploy/prod")})</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${href(x.url)}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
-      ${r.mode === "branch" ? "" : `<h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>`}
+      ${r.mode === "branch" ? "" : `<h4>swap 기록</h4><ul>${r.pending_swap ? `<li>${fmt(r.pending_swap.time)} <span class="tentative">잠정 — Azure 기록 확인 전</span></li>` : ""}${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || (r.pending_swap ? "" : "<li class='mute'>없음</li>")}</ul>`}
     </details>`}
   </section>`;
 }

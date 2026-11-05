@@ -251,7 +251,7 @@ const WEBLOGIN = (function () {
     setLS(key("webJob"), null);
     W.sw.last = done; W.sw.job = null;
     const what = job.action === "undo" ? "되돌리기" : "swap";
-    W.toast(err ? `${job.app} ${what} 실패\n${err}` : `${job.app} ${what} 완료 — 보드 반영까지 보통 3~5분(Azure 활동 기록이 늦게 올라옴)`, !!err);
+    W.toast(err ? `${job.app} ${what} 실패\n${err}` : `${job.app} ${what} 완료 — 보드 반영까지 보통 1~2분`, !!err);
     changed();
   }
 

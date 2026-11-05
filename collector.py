@@ -51,6 +51,9 @@ def az_json(args, timeout=180):
     return json.loads(sh(["az"] + args + ["-o", "json"], timeout) or "null")
 
 
+SAME_SWAP_S = 30   # 사이트 slotSwapStatus 와 활동 기록을 같은 swap 으로 보는 허용 차이(초)
+
+
 def iso(s):
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
@@ -135,6 +138,7 @@ class Collector:
         self.key_re = re.compile(cfg.get("issue_key_pattern", r"[A-Z][A-Z0-9]+-\d+"))
         self.errors = []
         self._sub = None
+        self._site_swaps = None
 
     def keys_of(self, text):
         return sorted(set(self.key_re.findall(text or "")))
@@ -162,7 +166,7 @@ class Collector:
 
     def swaps(self, app, days=None):
         """성공한 slot swap 목록(최신순). 작업 이름은 slotsswap/SlotsSwap 으로 대소문자가 섞여 있고,
-        사람 호출과 SlotSwapJobProcessor 호출이 같은 swap 에 둘 다 남으므로 1분 단위로 합치고 사람 쪽을 남긴다."""
+        사람 호출과 SlotSwapJobProcessor 호출이 같은 swap 에 둘 다 남으므로 3분 안의 것은 합치고 사람 쪽을 남긴다."""
         rid = (f"/subscriptions/{self.subscription()}/resourceGroups/{self.cfg['resource_group']}"
                f"/providers/Microsoft.Web/sites/{app}")
         days = int(days or self.cfg.get("swap_lookback_days", 90))
@@ -184,6 +188,48 @@ class Collector:
             else:
                 merged.append(dict(ev))
         return sorted(merged, key=lambda x: x["time"], reverse=True)
+
+    def site_swaps(self):
+        """리소스 그룹 사이트 전체의 마지막 성공 swap(slotSwapStatus) — az 1회, 수집 한 번 안에서는 캐시.
+        활동 기록보다 3~5분 빨리 바뀐다(11-05 실측: 활동 기록 성공 시각보다 6~9초 앞선 값). {앱: {time, from, to}}"""
+        if isinstance(self._site_swaps, Exception):   # 실패도 캐시 — 한 수집에서 앱마다 다시 부르지 않는다
+            raise self._site_swaps
+        if self._site_swaps is None:
+            try:
+                d = az_json(["webapp", "list", "-g", self.cfg["resource_group"],
+                             "--query", "[].{name:name, s:slotSwapStatus}"], timeout=120)
+            except Exception as e:
+                self._site_swaps = e
+                raise
+            out = {}
+            for x in d or []:
+                s = x.get("s") or {}
+                if not (x.get("name") and s.get("timestampUtc")):
+                    continue
+                try:   # 한 항목이 이상해도 다른 앱은 본다. 시각은 UTC 표기가 있는 값만 쓴다
+                    t = iso(s["timestampUtc"])
+                    if t.tzinfo is None:
+                        continue
+                except ValueError:
+                    continue
+                out[x["name"]] = {"time": t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                                  "from": s.get("sourceSlotName") or "", "to": s.get("destinationSlotName") or ""}
+            self._site_swaps = out
+        return self._site_swaps
+
+    @staticmethod
+    def pending_swap(site, swaps, gap_s=SAME_SWAP_S):
+        """사이트의 마지막 swap 이 운영 대상이고 활동 기록 최신 swap 보다 gap_s 넘게 새로우면 잠정 swap 으로 본다.
+        같은 swap 은 활동 기록이 사이트 값보다 몇 초 뒤라(11-05 실측 6~9초) 활동 기록이 오면 저절로 풀린다.
+        gap_s 를 넓게 잡으면 짧은 간격의 다음 swap(되돌리기)을 앞 swap 기록으로 오인한다."""
+        if not site or (site.get("to") or "").lower() != "production":
+            return None
+        t = iso(site.get("time"))
+        if not t:
+            return None
+        if swaps and (t - iso(swaps[0]["time"])).total_seconds() <= gap_s:
+            return None
+        return {"time": site["time"], "from": site.get("from", ""), "to": site["to"]}
 
     def slot_hosts(self, app):
         try:
@@ -279,7 +325,17 @@ class Collector:
         if app:  # swap 모드: 스테이징 브랜치가 staging 슬롯, 운영 = 마지막 swap 이전 성공 run
             try:
                 r["swaps"] = self.swaps(app)
-                sha, basis = self.estimate_prod(r["runs"], r["swaps"])
+                try:   # 잠정 swap 은 부가 정보 — 조회 실패면 활동 기록만으로 판정(기존 동작)
+                    pend = self.pending_swap(self.site_swaps().get(app), r["swaps"])
+                except Exception as e:
+                    pend = None
+                    r["notes"].append(f"사이트 swap 상태 조회 실패 — {e}")
+                if pend:
+                    r["pending_swap"] = pend
+                    sha, basis = self.estimate_prod(r["runs"], [pend] + r["swaps"])
+                    basis = "잠정(Azure 활동 기록 확인 전) — " + basis
+                else:
+                    sha, basis = self.estimate_prod(r["runs"], r["swaps"])
                 r["prod"] = {"sha": sha, "basis": basis}
                 r["hosts"] = self.slot_hosts(app)
             except Exception as e:

@@ -112,29 +112,167 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(m["errors"], ["adminsite: x"])
 
 
+class PendingSwapTest(unittest.TestCase):
+    """사이트 slotSwapStatus 로 만드는 잠정 swap."""
+    P = staticmethod(collector.Collector.pending_swap)
+    act = [{"time": "2026-11-05T05:09:43.3408237Z", "who": "u@x"}]
+
+    def test_newer_than_activity_log_is_pending(self):
+        site = {"time": "2026-11-05T06:00:00.000000Z", "from": "staging", "to": "Production"}
+        self.assertEqual(self.P(site, self.act)["time"], site["time"])
+
+    def test_same_swap_as_activity_log_is_not_pending(self):   # 11-05 실측: 사이트 값이 7초 앞섬
+        site = {"time": "2026-11-05T05:09:36.189000Z", "from": "staging", "to": "Production"}
+        self.assertIsNone(self.P(site, self.act))
+
+    def test_non_production_target_ignored(self):
+        site = {"time": "2026-11-05T06:00:00.000000Z", "from": "production", "to": "staging"}
+        self.assertIsNone(self.P(site, self.act))
+
+    def test_quick_second_swap_is_pending(self):   # 앞 swap 기록 50초 뒤의 되돌리기 — 앞 기록으로 오인하지 않는다
+        site = {"time": "2026-11-05T05:10:33.000000Z", "from": "staging", "to": "Production"}
+        self.assertIsNotNone(self.P(site, self.act))
+
+    def test_site_swaps_skips_bad_item_and_caches_failure(self):
+        rows = [{"name": "A", "s": {"timestampUtc": "깨진 값"}}, {"name": "N", "s": {"timestampUtc": "2026-11-05T05:00:00"}},
+                {"name": "B", "s": {"timestampUtc": "2026-11-05T05:00:00Z", "destinationSlotName": "Production"}}]
+        orig = collector.az_json
+        try:
+            collector.az_json = lambda args, timeout=None: rows
+            self.assertEqual(list(collector.Collector({"org": "o", "resource_group": "rg", "repos": []}).site_swaps()), ["B"])
+            calls = []
+            def boom(args, timeout=None):
+                calls.append(1); raise RuntimeError("az 실패")
+            collector.az_json = boom
+            c = collector.Collector({"org": "o", "resource_group": "rg", "repos": []})
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):
+                    c.site_swaps()
+            self.assertEqual(len(calls), 1)
+        finally:
+            collector.az_json = orig
+
+    def test_missing_values(self):
+        self.assertIsNone(self.P(None, self.act))
+        self.assertIsNone(self.P({"time": None, "to": "Production"}, self.act))
+        self.assertIsNotNone(self.P({"time": "2026-11-05T06:00:00Z", "to": "Production"}, []))   # 활동 기록이 비어도 잠정
+
+    def test_estimate_uses_pending_time(self):
+        runs = [{"conclusion": "success", "updatedAt": "2026-11-05T05:30:00Z", "headSha": "new"},
+                {"conclusion": "success", "updatedAt": "2026-11-05T04:00:00Z", "headSha": "old"}]
+        pend = self.P({"time": "2026-11-05T06:00:00Z", "to": "Production"}, self.act)
+        self.assertEqual(collector.Collector.estimate_prod(runs, self.act)[0], "old")
+        self.assertEqual(collector.Collector.estimate_prod(runs, [pend] + self.act)[0], "new")
+
+    def test_site_swaps_parses_and_caches(self):
+        rows = [{"name": "A", "s": {"timestampUtc": "2026-11-05T05:09:36.189000+00:00", "sourceSlotName": "staging",
+                                   "destinationSlotName": "Production"}},
+                {"name": "B", "s": None}]
+        calls = []
+        orig = collector.az_json
+        collector.az_json = lambda args, timeout=None: calls.append(args) or rows
+        try:
+            c = collector.Collector({"org": "o", "resource_group": "rg", "repos": []})
+            got = c.site_swaps(); c.site_swaps()
+        finally:
+            collector.az_json = orig
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(got, {"A": {"time": "2026-11-05T05:09:36.189000Z", "from": "staging", "to": "Production"}})
+
+
 class WatcherTest(unittest.TestCase):
     """감시 스레드의 tick: 지문이 바뀐 레포만 refresh(only=[...]) 로 넘기는지."""
 
-    def test_tick_refreshes_only_changed(self):
+    def setUp(self):
         import server
-        cfg = {"org": "o", "repos": [{"name": "a", "app": "A"}, {"name": "b", "app": "B"}]}
-        probes = {"a": {"refs": "1", "pr": "p"}, "b": {"refs": "1", "pr": "p"}}
-        swaps = {"A": "s1", "B": "s1"}
-        calls = []
-        orig = (collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap, server.refresh)
-        collector.load_cfg = lambda path=None: cfg
-        collector.Collector.probe_repo = lambda self, rc: dict(probes[rc["name"]])
-        collector.Collector.probe_swap = lambda self, app: swaps[app]
-        server.refresh = lambda only=None: calls.append(only)
-        try:
-            w = server.Watcher(30, 120)
-            w.tick(); self.assertEqual(calls, [])                 # 첫 tick 은 기준만 잡는다
-            probes["b"]["refs"] = "2"; w.tick(); self.assertEqual(calls, [["b"]])
-            w.tick(); self.assertEqual(calls, [["b"]])              # 변화 없으면 안 부른다
-            w.last_swap_check = 0; swaps["A"] = "s2"; w.tick(); self.assertEqual(calls, [["b"], ["a"]])
-            self.assertEqual(server.status["watch"]["changes"]["a"]["why"], "swap")
-        finally:
-            collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap, server.refresh = orig
+        self.server = server
+        self.cfg = {"org": "o", "repos": [{"name": "a", "app": "A"}, {"name": "b", "app": "B"}, {"name": "c"}]}
+        self.probes = {n: {"refs": "1", "pr": "p"} for n in "abc"}
+        self.site = {"A": {"time": "s1"}, "B": {"time": "s1"}}
+        self.act = {"A": None, "B": None}
+        self.state = {"repos": []}
+        self.calls, self.act_calls = [], []
+        self.orig = (collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap,
+                     collector.Collector.site_swaps, server.refresh, server.load_state)
+        collector.load_cfg = lambda path=None: self.cfg
+        collector.Collector.probe_repo = lambda s, rc: dict(self.probes[rc["name"]])
+        collector.Collector.probe_swap = lambda s, app: self.act_calls.append(app) or self.act[app]
+        collector.Collector.site_swaps = lambda s: self.site
+        server.refresh = lambda only=None: self.calls.append(only)
+        server.load_state = lambda: self.state
+
+    def tearDown(self):
+        (collector.load_cfg, collector.Collector.probe_repo, collector.Collector.probe_swap,
+         collector.Collector.site_swaps, self.server.refresh, self.server.load_state) = self.orig
+
+    def test_tick_refreshes_only_changed(self):
+        w = self.server.Watcher(30, 60)
+        w.tick(); self.assertEqual(self.calls, [])                 # 첫 tick 은 기준만 잡는다
+        self.probes["b"]["refs"] = "2"; w.tick(); self.assertEqual(self.calls, [["b"]])
+        w.tick(); self.assertEqual(self.calls, [["b"]])              # 변화 없으면 안 부른다
+        w.last_swap_check = 0; self.site["A"] = {"time": "s2"}; w.tick(); self.assertEqual(self.calls, [["b"], ["a"]])
+        self.assertEqual(self.server.status["watch"]["changes"]["a"]["why"], "swap")
+        self.assertEqual(self.act_calls, [])                         # 잠정이 없으면 활동 기록은 안 본다
+
+    def test_site_lookup_failure_keeps_repo_watch(self):
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        def boom(s):
+            raise RuntimeError("az 실패")
+        collector.Collector.site_swaps = boom
+        w.last_swap_check = 0; self.probes["a"]["refs"] = "2"; w.tick()
+        self.assertEqual(self.calls, [["a"]])                        # 레포 감시는 계속
+        self.assertIn("az 실패", self.server.status["watch"]["probe_error"])
+        self.assertEqual(w.swap["a"], "s1")       # 실패를 swap 변화로 보지 않는다
+
+    def test_pending_confirmed_by_activity_log(self):
+        import datetime as dt
+        t = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        ts = lambda d: (t + dt.timedelta(seconds=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.site["A"] = {"time": ts(-60)}
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        self.state = {"repos": [{"name": "a", "pending_swap": {"time": ts(-60)}}]}
+        self.act["A"] = ts(-3600)                                    # 활동 기록엔 아직 옛 swap
+        w.last_swap_check = 0; w.tick()
+        self.assertEqual(self.calls, []); self.assertEqual(self.act_calls, ["A"])
+        self.act["A"] = ts(-53)                                      # 확정이 올라옴(사이트 값보다 7초 뒤)
+        w.last_swap_check = 0; w.tick()
+        self.assertEqual(self.calls, [["a"]])
+        self.assertEqual(self.server.status["watch"]["changes"]["a"]["why"], "swap 확정")
+
+    def test_confirm_due_window(self):
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        f = self.server.Watcher.confirm_due
+        import time as _t
+        ago = lambda **k: {"time": (now - dt.timedelta(**k)).isoformat()}
+        self.assertFalse(f(None)); self.assertFalse(f({"time": "이상한 값"}))
+        self.assertTrue(f(ago(minutes=5), _t.time()))                 # 15분 안: 매번
+        self.assertFalse(f(ago(minutes=20), _t.time()))               # 그 뒤: 10분마다
+        self.assertTrue(f(ago(minutes=20), _t.time() - 601))
+        self.assertFalse(f(ago(hours=7), 0))                          # 6시간 뒤: 그만
+
+    def test_missed_swap_at_start_triggers_refresh(self):
+        self.state = {"repos": [{"name": "a", "swaps": [{"time": "2026-11-05T01:00:00Z"}]}, {"name": "b", "swaps": []}]}
+        self.site = {"A": {"time": "2026-11-05T05:00:00.000000Z", "to": "Production"}}   # state 보다 새 swap
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        self.assertEqual(self.calls, [["a"]])
+        self.assertEqual(self.server.status["watch"]["changes"]["a"]["why"], "swap(시작 보정)")
+
+    def test_confirm_failure_keeps_other_changes(self):
+        import datetime as dt
+        t = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        self.state = {"repos": [{"name": "b", "pending_swap": {"time": t}}]}
+        def boom(s, app):
+            raise RuntimeError("활동 기록 실패")
+        collector.Collector.probe_swap = boom
+        self.probes["a"]["refs"] = "2"; w.last_swap_check = 0; w.tick()
+        self.assertEqual(self.calls, [["a"]])
+        self.assertIn("활동 기록 실패", self.server.status["watch"]["probe_error"])
 
 
 if __name__ == "__main__":

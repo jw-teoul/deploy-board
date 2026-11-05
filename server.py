@@ -1,6 +1,6 @@
 """배포 현황 보드 로컬 서버 — web/ 정적 파일과 data/state.json 을 서빙하고, 수집기를 백그라운드로 돌린다.
 
-실행: python server.py [--port 8765] [--bind 0.0.0.0] [--no-collect] [--no-watch] [--check 30] [--swap-check 120]   → http://localhost:8765
+실행: python server.py [--port 8765] [--bind 0.0.0.0] [--no-collect] [--no-watch] [--check 30] [--swap-check 60]   → http://localhost:8765
 `POST /api/refresh` 에 인증이 없으므로 공용 망에서는 `--bind 127.0.0.1` 로 묶는다(README 「주의」).
 
 실행 방법 세 가지(코드 하나, README 「실행 방법」):
@@ -9,7 +9,7 @@
 - 내 PC 용 `--allow-swap`: 127.0.0.1/localhost 바인딩일 때만 켜지고 `--readonly` 와 함께 쓸 수 없다. swap.py 참고.
 
 변경 감시(기본 켜짐): `--check` 초마다 레포별로 가벼운 조회(원격 브랜치 끝 커밋 ls-remote 1회 + 최근 PR 갱신 시각 1회)를 하고,
-`--swap-check` 초마다 Azure 활동 기록에서 마지막 swap 시각을 본다. 바뀐 레포만 다시 수집해 state.json 에 합친다.
+`--swap-check` 초마다 리소스 그룹 사이트의 마지막 swap(slotSwapStatus, az 1회)을 본다. 바뀐 레포만 다시 수집해 state.json 에 합친다. 활동 기록에 아직 없는 swap 은 잠정(pending_swap)으로 운영 SHA 를 추정하고, 활동 기록에 확정이 올라오면 다시 수집해 푼다.
 웹훅(GitHub push/PR, Azure Event Grid)은 외부에서 접근되는 주소가 필요해 지금은 쓸 수 없다 — 나중에 붙일 때는
 `POST /api/refresh {"repos":["adminsite"]}` 를 호출하면 된다.
 """
@@ -239,6 +239,7 @@ class Watcher(threading.Thread):
         self.fp = {}        # repo -> {"refs","pr"}
         self.swap = {}      # repo -> 마지막 swap 시각
         self.last_swap_check = 0
+        self.confirm_at = {}  # repo -> 마지막 확정 확인 시각(time.time)
         status["watch"].update(enabled=True, check_s=check_s, swap_check_s=swap_s)
 
     def run(self):
@@ -250,28 +251,72 @@ class Watcher(threading.Thread):
                 status["watch"]["probe_error"] = traceback.format_exc()[-400:]
             time.sleep(self.check_s)
 
+    @staticmethod
+    def confirm_due(p, last_try=0, fast_s=15 * 60, slow_every_s=10 * 60, give_up_s=6 * 3600):
+        """잠정 swap 의 확정 확인을 할지: 생긴 지 fast_s 안이면 swap 확인마다, 그 뒤 give_up_s 까지는 slow_every_s 마다.
+        그 뒤에는 「잠정」 표시로 남긴다(다음 수집 때 다시 판정)."""
+        try:
+            age = (dt.datetime.now(dt.timezone.utc) - collector.iso(p["time"])).total_seconds()
+        except Exception:   # 잠정 없음·시각 이상
+            return False
+        if age <= fast_s:
+            return True
+        return age <= give_up_s and time.time() - last_try >= slow_every_s
+
+    @staticmethod
+    def missed_at_start(site_entry, r):
+        """첫 확인 때: 저장된 state 가 모르는 swap(잠정으로도 없음)이 사이트에 있으면 서버가 꺼져 있던 동안의 swap — 다시 수집."""
+        if not site_entry or not r or "swaps" not in r:
+            return False
+        if r.get("pending_swap", {}).get("time") == site_entry.get("time"):
+            return False
+        try:
+            return collector.Collector.pending_swap(site_entry, r.get("swaps") or []) is not None
+        except Exception:
+            return False
+
     def tick(self):
         cfg = collector.load_cfg()
         c = collector.Collector(cfg)
         changed = []
         do_swap = time.time() - self.last_swap_check >= self.swap_s
+        site, swap_err, pend = None, None, {}
+        if do_swap:
+            # 사이트 slotSwapStatus 를 리소스 그룹 1회로 본다 — 활동 기록(앱마다 1회, 3~5분 늦음)보다 빠르고 가볍다
+            try:
+                site = c.site_swaps()
+            except Exception as e:
+                swap_err = f"사이트 swap 상태 조회 실패 — {e}"
+            st_repos = {r["name"]: r for r in (load_state() or {}).get("repos", [])}
+            pend = {n: r["pending_swap"] for n, r in st_repos.items() if r.get("pending_swap")}
         for rc in cfg["repos"]:
             name = rc["name"]
             fp = c.probe_repo(rc)
             if name in self.fp and fp != self.fp[name]:
                 changed.append((name, "refs" if fp["refs"] != self.fp[name]["refs"] else "pr"))
             self.fp[name] = fp
-            if do_swap and rc.get("app"):
-                sw = c.probe_swap(rc["app"])
+            if site is not None and rc.get("app"):
+                sw = (site.get(rc["app"]) or {}).get("time")
                 if name in self.swap and sw != self.swap[name]:
                     changed.append((name, "swap"))
+                elif name not in self.swap and self.missed_at_start(site.get(rc["app"]), st_repos.get(name)):
+                    changed.append((name, "swap(시작 보정)"))
                 self.swap[name] = sw
+            if do_swap and rc.get("app") and self.confirm_due(pend.get(name), self.confirm_at.get(name, 0)):
+                # 잠정 swap 이 활동 기록에 확정으로 올라왔으면 다시 수집해 잠정을 푼다
+                self.confirm_at[name] = time.time()
+                try:
+                    a = c.probe_swap(rc["app"])
+                    if a and (collector.iso(a) - collector.iso(pend[name]["time"])).total_seconds() >= -collector.SAME_SWAP_S:
+                        changed.append((name, "swap 확정"))
+                except Exception as e:   # 이 앱 확인만 실패 — 이미 감지한 다른 변경은 그대로 수집한다
+                    swap_err = f"{name} swap 확정 확인 실패 — {e}"
         if do_swap:
             self.last_swap_check = time.time()
             status["watch"]["last_swap_check"] = now()
         status["watch"]["last_check"] = now()
         status["watch"]["checks"] += 1
-        status["watch"]["probe_error"] = None
+        status["watch"]["probe_error"] = swap_err
         if changed:
             for name, why in changed:
                 status["watch"]["changes"][name] = {"at": now(), "why": why}
@@ -418,7 +463,7 @@ def main():
     ap.add_argument("--no-collect", action="store_true", help="시작할 때 전체 수집하지 않음")
     ap.add_argument("--no-watch", action="store_true", help="변경 감시 끄기")
     ap.add_argument("--check", type=int, default=30, help="레포 변경 확인 간격(초)")
-    ap.add_argument("--swap-check", type=int, default=120, help="Azure swap 확인 간격(초)")
+    ap.add_argument("--swap-check", type=int, default=60, help="Azure swap 확인 간격(초) — 사이트 상태 1회 조회")
     ap.add_argument("--open", action="store_true", help="브라우저 열기")
     ap.add_argument("--readonly", action="store_true", help="공유용 보기 전용: 수집·감시·새로고침 없이 data/state.json 만 보여 줌")
     ap.add_argument("--allow-swap", action="store_true", help="내 PC 용: swap·되돌리기 버튼 켜기(127.0.0.1/localhost 바인딩일 때만)")
