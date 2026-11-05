@@ -52,6 +52,7 @@ def az_json(args, timeout=180):
 
 
 SAME_SWAP_S = 30   # 사이트 slotSwapStatus 와 활동 기록을 같은 swap 으로 보는 허용 차이(초)
+INCOMPLETE_SWAP_S = 10 * 60   # 활동 기록에 시작 이벤트만 있는 swap 은 그 뒤 이만큼 안의 사이트 값을 같은 swap 으로 본다
 
 
 def iso(s):
@@ -166,28 +167,46 @@ class Collector:
 
     def swaps(self, app, days=None):
         """성공한 slot swap 목록(최신순). 작업 이름은 slotsswap/SlotsSwap 으로 대소문자가 섞여 있고,
-        사람 호출과 SlotSwapJobProcessor 호출이 같은 swap 에 둘 다 남으므로 3분 안의 것은 합치고 사람 쪽을 남긴다."""
+        사람 호출과 SlotSwapJobProcessor 호출이 같은 swap 에 둘 다 남는다 → merge_swap_events 로 합친다."""
         rid = (f"/subscriptions/{self.subscription()}/resourceGroups/{self.cfg['resource_group']}"
                f"/providers/Microsoft.Web/sites/{app}")
         days = int(days or self.cfg.get("swap_lookback_days", 90))
         # 기본 --max-events 50 이면 배포가 잦은 날 swap 이 최근 50건 밖으로 밀려 안 보인다(10-24 사고) → 넉넉히 올리고 필드만 줄인다
         d = az_json(["monitor", "activity-log", "list", "--resource-id", rid, "--offset", f"{days}d", "--max-events", "5000",
-                     "--select", "eventTimestamp", "operationName", "status", "caller"], timeout=300)
+                     "--select", "eventTimestamp", "operationName", "status", "caller", "correlationId"], timeout=300)
         events = []
         for e in d or []:
             op = ((e.get("operationName") or {}).get("value") or "").lower()
             if "slotsswap" in op and (e.get("status") or {}).get("value") == "Succeeded":
-                events.append({"time": e["eventTimestamp"], "who": e.get("caller") or ""})
-        events.sort(key=lambda x: x["time"])
-        merged = []  # 3분 안의 연속 이벤트는 같은 swap 으로 보고 사람 caller 를 남긴다
-        for ev in events:
-            if merged and (iso(ev["time"]) - iso(merged[-1]["time"])).total_seconds() < 180:
-                if "@" in ev["who"] and "@" not in merged[-1]["who"]:
-                    merged[-1]["who"] = ev["who"]
-                merged[-1]["time"] = max(merged[-1]["time"], ev["time"])
+                events.append({"time": e["eventTimestamp"], "who": e.get("caller") or "", "cid": e.get("correlationId") or ""})
+        return self.merge_swap_events(events)
+
+    @staticmethod
+    def merge_swap_events(events, gap_s=180):
+        """같은 swap 의 이벤트를 하나로: correlationId 가 같으면 같은 swap(11-05 실측 35건 모두 사람·처리 이벤트가 같은 값,
+        두 이벤트가 2분 벌어진 경우도 있음). correlationId 가 없는 이벤트만 묶음 첫 시각에서 gap_s 안이면 합친다
+        (마지막 시각 기준이면 줄줄이 이어 붙어 서로 다른 swap 이 합쳐진다). 사람 caller 를 남기고 시각은 늦은 쪽(최신순).
+        start(첫 이벤트 시각)·n(이벤트 수)도 남긴다 — n=1 이면 처리 이벤트가 아직 안 올라온 swap 일 수 있다(pending_swap)."""
+        def add(g, ev):
+            if "@" in ev["who"] and "@" not in g["who"]:
+                g["who"] = ev["who"]
+            g["time"] = max(g["time"], ev["time"])
+        by_cid, loose = {}, []
+        for ev in sorted(events, key=lambda x: x["time"]):
+            cid = ev.get("cid")
+            if cid:
+                if cid in by_cid:
+                    add(by_cid[cid], ev)
+                else:
+                    by_cid[cid] = {"time": ev["time"], "who": ev["who"], "start": ev["time"], "n": 0}
+                by_cid[cid]["n"] += 1
+            elif loose and (iso(ev["time"]) - iso(loose[-1]["start"])).total_seconds() < gap_s:
+                add(loose[-1], ev)
+                loose[-1]["n"] += 1
             else:
-                merged.append(dict(ev))
-        return sorted(merged, key=lambda x: x["time"], reverse=True)
+                loose.append({"time": ev["time"], "who": ev["who"], "start": ev["time"], "n": 1})
+        out = list(by_cid.values()) + loose
+        return sorted(out, key=lambda x: x["time"], reverse=True)
 
     def site_swaps(self):
         """리소스 그룹 사이트 전체의 마지막 성공 swap(slotSwapStatus) — az 1회, 수집 한 번 안에서는 캐시.
@@ -218,17 +237,22 @@ class Collector:
         return self._site_swaps
 
     @staticmethod
-    def pending_swap(site, swaps, gap_s=SAME_SWAP_S):
+    def pending_swap(site, swaps, gap_s=SAME_SWAP_S, open_s=INCOMPLETE_SWAP_S):
         """사이트의 마지막 swap 이 운영 대상이고 활동 기록 최신 swap 보다 gap_s 넘게 새로우면 잠정 swap 으로 본다.
         같은 swap 은 활동 기록이 사이트 값보다 몇 초 뒤라(11-05 실측 6~9초) 활동 기록이 오면 저절로 풀린다.
-        gap_s 를 넓게 잡으면 짧은 간격의 다음 swap(되돌리기)을 앞 swap 기록으로 오인한다."""
+        gap_s 를 넓게 잡으면 짧은 간격의 다음 swap(되돌리기)을 앞 swap 기록으로 오인한다.
+        단 활동 기록 최신 swap 이 이벤트 1건뿐이면(시작 쪽만 올라오고 처리 이벤트가 아직 — 11-04 처럼 2분 벌어짐)
+        그 시작에서 open_s 안의 사이트 값은 같은 swap 으로 본다. 겹쳐 세면 운영·스테이징 추적이 한 번 더 뒤집힌다."""
         if not site or (site.get("to") or "").lower() != "production":
             return None
         t = iso(site.get("time"))
         if not t:
             return None
-        if swaps and (t - iso(swaps[0]["time"])).total_seconds() <= gap_s:
-            return None
+        if swaps:
+            if (t - iso(swaps[0]["time"])).total_seconds() <= gap_s:
+                return None
+            if swaps[0].get("n", 2) < 2 and (t - iso(swaps[0].get("start") or swaps[0]["time"])).total_seconds() <= open_s:
+                return None
         return {"time": site["time"], "from": site.get("from", ""), "to": site["to"]}
 
     def slot_hosts(self, app):
@@ -243,14 +267,29 @@ class Collector:
 
     # ---------- 판정 ----------
     @staticmethod
-    def estimate_prod(runs, swaps):
-        """운영 SHA 추정: 마지막 성공 swap 이전에 끝난 마지막 성공 배포 run 의 headSha."""
+    def estimate_prod(runs, swaps, since=None):
+        """운영 SHA: 성공 배포 run(스테이징 슬롯에 들어감)과 swap(운영·스테이징 맞바꿈)을 시각순으로 따라간다.
+        배포 없이 swap 을 다시 하면(되돌리기) 이전 운영으로 돌아간 것까지 맞는다. 추적이 조회 범위(run 30건) 밖을
+        가리키면 「마지막 swap 이전 마지막 성공 run」 으로 단순 추정한다.
+        since(swap 조회 시작 시각)보다 오래된 run 은 추적에 넣지 않는다 — 그 사이 swap 을 몰라 순서가 어긋날 수 있다."""
         if not swaps:
             return None, "swap 기록 없음(조회 기간 안)"
-        last = iso(swaps[0]["time"])
-        for r in runs:  # gh run list 는 최신순
-            if r.get("conclusion") == "success" and iso(r["updatedAt"]) and iso(r["updatedAt"]) <= last:
-                return r["headSha"], f"마지막 swap {swaps[0]['time'][:19]}Z 이전 마지막 성공 배포 run({r['updatedAt']})"
+        ok = [r for r in runs if r.get("conclusion") == "success" and iso(r.get("updatedAt"))]
+        tracked = [r for r in ok if not since or iso(r["updatedAt"]) >= since]
+        ev = [(iso(r["updatedAt"]), 0, r) for r in tracked] + [(iso(s["time"]), 1, s) for s in swaps if iso(s.get("time"))]
+        prod = stg = None   # (sha, run updatedAt) — None 은 조회 범위 밖이라 모름
+        for _, kind, x in sorted(ev, key=lambda e: (e[0], e[1])):
+            if kind == 0:
+                stg = (x["headSha"], x["updatedAt"])
+            else:
+                prod, stg = stg, prod
+        last = swaps[0]["time"][:19]
+        if prod:
+            return prod[0], f"배포·swap 순서 추적(swap {len(swaps)}회) — 마지막 swap {last}Z 뒤 운영 = 성공 배포 run({prod[1]})"
+        last_t = iso(swaps[0]["time"])
+        for r in ok:  # gh run list 는 최신순
+            if iso(r["updatedAt"]) <= last_t:
+                return r["headSha"], f"추적 범위 밖 — 단순 추정: 마지막 swap {last}Z 이전 마지막 성공 배포 run({r['updatedAt']})"
         return None, "마지막 swap 이전 성공 배포 run 을 조회 범위(30건)에서 못 찾음"
 
     @staticmethod
@@ -324,6 +363,7 @@ class Collector:
         r["prod"] = {"sha": None, "basis": "Azure 앱도 운영 브랜치도 미설정"}
         if app:  # swap 모드: 스테이징 브랜치가 staging 슬롯, 운영 = 마지막 swap 이전 성공 run
             try:
+                since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=int(self.cfg.get("swap_lookback_days", 90)))
                 r["swaps"] = self.swaps(app)
                 try:   # 잠정 swap 은 부가 정보 — 조회 실패면 활동 기록만으로 판정(기존 동작)
                     pend = self.pending_swap(self.site_swaps().get(app), r["swaps"])
@@ -332,10 +372,10 @@ class Collector:
                     r["notes"].append(f"사이트 swap 상태 조회 실패 — {e}")
                 if pend:
                     r["pending_swap"] = pend
-                    sha, basis = self.estimate_prod(r["runs"], [pend] + r["swaps"])
+                    sha, basis = self.estimate_prod(r["runs"], [pend] + r["swaps"], since)
                     basis = "잠정(Azure 활동 기록 확인 전) — " + basis
                 else:
-                    sha, basis = self.estimate_prod(r["runs"], r["swaps"])
+                    sha, basis = self.estimate_prod(r["runs"], r["swaps"], since)
                 r["prod"] = {"sha": sha, "basis": basis}
                 r["hosts"] = self.slot_hosts(app)
             except Exception as e:
@@ -470,7 +510,14 @@ def write_state(state, out):
     tmp = out + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, out)
+    for i in range(5):   # Windows: 다른 쪽(올리기·화면 읽기)이 잠깐 열고 있으면 교체가 PermissionError — 짧게 다시
+        try:
+            os.replace(tmp, out)
+            return
+        except PermissionError:
+            if i == 4:
+                raise
+            time.sleep(0.2 * (i + 1))
 
 
 def main():

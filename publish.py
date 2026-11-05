@@ -8,7 +8,6 @@
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 
@@ -28,19 +27,22 @@ def publish(target, src=STATE, timeout=60):
     if not os.path.exists(src):
         return f"올릴 파일 없음: {src}"
     try:
+        # 파일은 읽는 순간만 연다 — 오래 걸리는 ssh 동안 열어 두면 Windows 에서 수집 쪽 os.replace(state.json) 가 막힌다
+        with open(src, "rb") as f:
+            data = f.read()
         if is_remote(target):
             host, path = target.split(":", 1)
             d, tmp = os.path.dirname(path) or ".", path + ".tmp"
             remote = f"mkdir -p {shlex.quote(d)} && cat > {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(path)}"
-            with open(src, "rb") as f:
-                p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote],
-                                   stdin=f, capture_output=True, timeout=timeout)
+            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote],
+                               input=data, capture_output=True, timeout=timeout)
             if p.returncode != 0:
                 return f"ssh rc={p.returncode}: {p.stderr.decode('utf-8', 'replace')[-300:]}"
         else:
             os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
             tmp = target + ".tmp"
-            shutil.copyfile(src, tmp)
+            with open(tmp, "wb") as f:
+                f.write(data)
             os.replace(tmp, target)
     except Exception as e:
         return str(e)[-300:]

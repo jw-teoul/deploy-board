@@ -93,6 +93,75 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(sha, "old")
         self.assertEqual(collector.Collector.estimate_prod(runs, [])[0], None)
 
+    R = staticmethod(lambda t, sha, c="success": {"conclusion": c, "updatedAt": t, "headSha": sha})
+    S = staticmethod(lambda t: {"time": t, "who": "x"})
+
+    def test_estimate_after_rollback(self):   # 배포 없이 swap 두 번(되돌리기) → 이전 운영으로 돌아감
+        runs = [self.R("2026-11-01T02:00:00Z", "B"), self.R("2026-11-01T01:00:00Z", "A")]
+        swaps = [self.S("2026-11-01T04:00:00Z"), self.S("2026-11-01T03:00:00Z"), self.S("2026-11-01T01:30:00Z")]
+        sha, basis = collector.Collector.estimate_prod(runs, swaps)
+        self.assertEqual(sha, "A")                 # A 운영 → B 배포·swap(운영 B) → 되돌리기(운영 A)
+        self.assertIn("추적", basis); self.assertNotIn("범위 밖", basis)
+        self.assertEqual(collector.Collector.estimate_prod(runs, swaps[1:])[0], "B")
+
+    def test_estimate_rollback_out_of_range_falls_back(self):   # 되돌리기가 조회 범위 밖 운영을 가리킴
+        runs = [self.R("2026-11-01T02:00:00Z", "B")]
+        swaps = [self.S("2026-11-01T04:00:00Z"), self.S("2026-11-01T03:00:00Z")]
+        sha, basis = collector.Collector.estimate_prod(runs, swaps)
+        self.assertEqual(sha, "B"); self.assertIn("추적 범위 밖 — 단순 추정", basis)
+
+    def test_estimate_failed_run_does_not_enter_staging(self):
+        runs = [self.R("2026-11-01T02:00:00Z", "BAD", "failure"), self.R("2026-11-01T01:00:00Z", "A")]
+        self.assertEqual(collector.Collector.estimate_prod(runs, [self.S("2026-11-01T03:00:00Z")])[0], "A")
+
+    def test_estimate_pending_rollback(self):   # 잠정 swap 도 같은 추적 — 잠정 되돌리기면 이전 운영
+        runs = [self.R("2026-11-01T02:00:00Z", "B"), self.R("2026-11-01T01:00:00Z", "A")]
+        act = [self.S("2026-11-01T03:00:00Z"), self.S("2026-11-01T01:30:00Z")]
+        pend = {"time": "2026-11-01T03:05:00.000000Z", "from": "staging", "to": "Production"}
+        self.assertEqual(collector.Collector.estimate_prod(runs, [pend] + act)[0], "A")
+
+
+    def test_estimate_ignores_runs_before_lookback(self):   # 조회 기간 밖 swap 을 모르는 오래된 run 은 추적에 안 넣음
+        import datetime as dt
+        runs = [self.R("2026-11-01T04:30:00Z", "B"), self.R("2026-07-01T01:00:00Z", "OLD")]
+        swaps = [self.S("2026-11-01T03:00:00Z")]   # 7~10월 사이 swap 은 조회 기간 밖이라 모름
+        since = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
+        self.assertNotIn("단순 추정", collector.Collector.estimate_prod(runs, swaps)[1])   # 넣으면 확신 문구로 추적
+        sha, basis = collector.Collector.estimate_prod(runs, swaps, since)
+        self.assertEqual(sha, "OLD"); self.assertIn("추적 범위 밖 — 단순 추정", basis)
+
+    def test_pending_not_double_counted_when_only_start_event(self):   # 검토 재현: 시작 이벤트만 있고 처리 이벤트 2분 뒤
+        runs = [self.R("2026-11-01T02:00:00Z", "B"), self.R("2026-11-01T01:00:00Z", "A")]
+        act = collector.Collector.merge_swap_events([
+            {"time": "2026-11-01T03:00:00Z", "who": "u@x", "cid": "c2"},
+            {"time": "2026-11-01T01:30:00Z", "who": "u@x", "cid": "c1"}, {"time": "2026-11-01T01:31:00Z", "who": "P", "cid": "c1"}])
+        site = {"time": "2026-11-01T03:01:55.000000Z", "from": "staging", "to": "Production"}
+        pend = collector.Collector.pending_swap(site, act)
+        self.assertIsNone(pend)
+        self.assertEqual(collector.Collector.estimate_prod(runs, act)[0], "B")
+        later = dict(site, time="2026-11-01T03:12:00.000000Z")               # 10분 넘게 뒤면 다음 swap(잠정)
+        self.assertIsNotNone(collector.Collector.pending_swap(later, act))
+
+
+class SwapMergeTest(unittest.TestCase):
+    M = staticmethod(collector.Collector.merge_swap_events)
+
+    def test_same_correlation_two_minutes_apart_is_one(self):   # adminsite 11-04 01:38:15/01:40:18 실측 모양
+        ev = [{"time": "2026-11-04T01:38:15Z", "who": "u@x", "cid": "c1"},
+              {"time": "2026-11-04T01:40:18Z", "who": "SlotSwapJobProcessor", "cid": "c1"}]
+        self.assertEqual(self.M(ev), [{"time": "2026-11-04T01:40:18Z", "who": "u@x", "start": "2026-11-04T01:38:15Z", "n": 2}])
+
+    def test_different_correlation_close_together_are_two(self):
+        ev = [{"time": "2026-11-04T01:00:00Z", "who": "u@x", "cid": "c1"},
+              {"time": "2026-11-04T01:00:30Z", "who": "v@x", "cid": "c2"}]
+        self.assertEqual([e["who"] for e in self.M(ev)], ["v@x", "u@x"])
+
+    def test_no_correlation_does_not_chain(self):   # 2분 간격 셋: 첫 시각 기준이라 1·2 는 합치고 3 은 따로
+        ev = [{"time": "2026-11-04T01:00:00Z", "who": "a@x"}, {"time": "2026-11-04T01:02:00Z", "who": "P"},
+              {"time": "2026-11-04T01:04:00Z", "who": "P"}]
+        self.assertEqual([e["time"] for e in self.M(ev)], ["2026-11-04T01:04:00Z", "2026-11-04T01:02:00Z"])
+
+
 
 
 class MergeTest(unittest.TestCase):
@@ -273,6 +342,41 @@ class WatcherTest(unittest.TestCase):
         self.probes["a"]["refs"] = "2"; w.last_swap_check = 0; w.tick()
         self.assertEqual(self.calls, [["a"]])
         self.assertIn("활동 기록 실패", self.server.status["watch"]["probe_error"])
+
+
+    def test_failed_refresh_is_retried_after_interval(self):
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        results = [["a"], []]
+        self.server.refresh = lambda only=None: self.calls.append(only) or results.pop(0)
+        self.probes["a"]["refs"] = "2"; w.tick()
+        self.assertEqual(self.calls, [["a"]]); self.assertIn("a", w.retry)
+        w.tick(); self.assertEqual(self.calls, [["a"]])                 # 5분 전에는 다시 안 함
+        w.retry["a"] = (w.retry["a"][0], 0, 1); w.tick()                # 시각이 지나면 다시 수집
+        self.assertEqual(self.calls, [["a"], ["a"]])
+        self.assertEqual(self.server.status["watch"]["changes"]["a"]["why"], "재시도(refs)")
+        self.assertNotIn("a", w.retry)                                   # 성공하면 그만
+        w.tick(); self.assertEqual(len(self.calls), 2)
+
+    def test_refresh_busy_counts_as_failed(self):
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        self.server.refresh = lambda only=None: None                     # 다른 수집이 먼저 잡음
+        self.probes["b"]["pr"] = "q"; w.tick()
+        self.assertEqual(w.retry["b"][0], "pr")
+
+    def test_retry_backoff_keeps_reason(self):
+        import time as _t
+        w = self.server.Watcher(30, 60)
+        w.tick()
+        self.server.refresh = lambda only=None: self.calls.append(only) or list(only)   # 계속 실패
+        self.probes["a"]["refs"] = "2"; w.tick()
+        waits = []
+        for _ in range(6):
+            waits.append(round(w.retry["a"][1] - _t.time(), -1))
+            w.retry["a"] = (w.retry["a"][0], 0, w.retry["a"][2]); w.tick()
+        self.assertEqual(waits, [300, 600, 1200, 2400, 3600, 3600])
+        self.assertEqual(w.retry["a"][0], "refs")
 
 
 if __name__ == "__main__":

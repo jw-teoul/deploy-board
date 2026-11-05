@@ -109,5 +109,72 @@ class MergeAzure(unittest.TestCase):
         self.assertEqual(self.merge({**base, "azure": az}, {**base, "azure": az2})["azure"], az2)
 
 
+class PublishRetryTest(unittest.TestCase):
+    def setUp(self):
+        self.orig = (server.publish.publish, server.OPT.get("publish"), server.status.get("publish"), server.status["running"])
+        self.results = []
+        server.publish.publish = lambda target, src: self.results.pop(0)
+        server.OPT["publish"] = "host:x/state.json"
+        server.status["publish"] = {"target": "host:x/state.json", "last": None, "ok_at": None, "error": "ssh 실패"}
+        server.status["running"] = False
+
+    def tearDown(self):
+        server.publish.publish, server.OPT["publish"], server.status["publish"], server.status["running"] = self.orig
+
+    def test_retries_with_backoff_and_stops_on_success(self):
+        r = server.PublishRetry()
+        self.assertFalse(r.step(0))            # 1분 뒤로 예약
+        self.assertFalse(r.step(59))
+        self.results = ["또 실패"]; self.assertTrue(r.step(60))
+        self.assertEqual(server.status["publish"]["error"], "또 실패")
+        self.assertFalse(r.step(61)); self.assertFalse(r.step(61 + 119))   # 두 번째는 2분 뒤
+        server.status["running"] = True; self.assertFalse(r.step(61 + 120))   # 수집 중이면 미룸
+        server.status["running"] = False
+        self.results = [None]; self.assertTrue(r.step(61 + 121))
+        self.assertIsNone(server.status["publish"]["error"]); self.assertIsNotNone(server.status["publish"]["ok_at"])
+        self.assertFalse(r.step(10 ** 6)); self.assertEqual(r.fails, 0)
+
+    def test_backoff_caps_at_five_minutes(self):
+        r = server.PublishRetry(); r.fails = 10
+        r.step(0); self.assertEqual(r.next_at, 300)
+
+
+class RefreshResultTest(unittest.TestCase):
+    """refresh 가 실패한 레포를 돌려주는지(감시 재시도의 근거). state 는 임시 파일에만 쓴다."""
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"collected_at": "t0", "errors": [], "repos": [{"name": "a"}, {"name": "b"}]}, f)
+        self.orig = (server.STATE, collector.Collector.collect, collector.load_cfg, server.OPT.get("publish"))
+        server.STATE, server.OPT["publish"] = self.path, None
+        collector.load_cfg = lambda path=None: {"org": "o", "repos": [{"name": "a"}, {"name": "b"}]}
+
+    def tearDown(self):
+        server.STATE, collector.Collector.collect, collector.load_cfg, server.OPT["publish"] = self.orig
+        os.remove(self.path)
+
+    def test_repo_with_errors_is_failed(self):
+        collector.Collector.collect = lambda s, only=None: {"collected_at": "t1", "duration_s": 1, "errors": [], "repos": [
+            {"name": "a", "errors": ["Azure 수집 실패 — x"]}]}
+        self.assertEqual(server.refresh(["a"]), ["a"])
+        collector.Collector.collect = lambda s, only=None: {"collected_at": "t2", "duration_s": 1, "errors": [], "repos": [{"name": "a", "errors": []}]}
+        self.assertEqual(server.refresh(["a"]), [])
+
+    def test_exception_fails_all_targets(self):
+        def boom(s, only=None):
+            raise RuntimeError("gh 끊김")
+        collector.Collector.collect = boom
+        self.assertEqual(server.refresh(["b"]), ["b"])
+        self.assertEqual(server.refresh(), ["a", "b"])
+        self.assertIn("gh 끊김", server.status["last_error"])
+
+    def test_busy_returns_none(self):
+        server.status["running"] = True
+        try:
+            self.assertIsNone(server.refresh(["a"]))
+        finally:
+            server.status["running"] = False
+
+
 if __name__ == "__main__":
     unittest.main()

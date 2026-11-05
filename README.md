@@ -11,7 +11,7 @@
 
 - 코드에서 막는 것: `--readonly` 를 `--allow-swap`·`--publish` 와 같이 주면 시작하지 않는다. `--allow-swap` 은 `--bind` 가 127.0.0.1·localhost·::1 일 때만 시작한다(기본 0.0.0.0 이면 거부). 화면은 서버가 swap 을 켰다고 알려 주거나 웹 로그인으로 권한을 확인했을 때만 버튼을 그린다.
 - 헤더 꼬리표로 지금 실행 방법을 보여 준다: 「공유 보기 전용」(30분 넘게 안 올라오면 「수집 PC 꺼짐?」), 「swap 켜짐」, 「공유 서버로 올림」.
-- 수집 결과를 공유 서버에 올리려면 수집하는 PC 에서 `--publish datacrawler:deploy-board/data/state.json` 을 붙인다(수집이 끝날 때마다 ssh 로 임시 파일에 쓴 뒤 바꿔 끼운다). 로컬 경로도 된다. 따로 한 번만: `python publish.py <대상>`.
+- 수집 결과를 공유 서버에 올리려면 수집하는 PC 에서 `--publish datacrawler:deploy-board/data/state.json` 을 붙인다(수집이 끝날 때마다 ssh 로 임시 파일에 쓴 뒤 바꿔 끼운다. 실패하면 1분 뒤부터 최대 5분 간격으로 다시 올린다). 로컬 경로도 된다. 따로 한 번만: `python publish.py <대상>`.
 
 ```
 python server.py --no-collect --open --check 30 --swap-check 60   # --no-watch 로 감시 끄기
@@ -83,7 +83,7 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 | PR(상태·base·머지 커밋) | `gh pr list --state all -L 300` |
 | 스테이징 배포 run | `gh run list --workflow <workflow> -b <배포 브랜치>` |
 | swap 기록 | `az monitor activity-log list --resource-id <site> --max-events 5000` 의 `slotsswap` Succeeded (리소스 그룹 필터로는 안 나오고, 작업 이름 대소문자가 섞여 있어 소문자로 비교. 기본 `--max-events 50` 이면 배포가 잦은 날 swap 이 잘려 운영 판정이 사라진다) |
-| 운영 SHA(추정) | 마지막 swap 이전에 끝난 마지막 성공 배포 run 의 headSha — swap back·포털 수동 배포가 있으면 틀릴 수 있어 화면에 「추정」과 근거를 같이 보여 준다 |
+| 운영 SHA(추정) | 성공 배포 run(staging 슬롯에 들어감)과 swap(운영·스테이징 맞바꿈)을 시각순으로 따라간 결과 — 배포 없이 swap 을 다시 하는 되돌리기도 맞는다. 추적이 조회 범위(run 30건·swap 조회 기간) 밖을 가리키면 「마지막 swap 이전 마지막 성공 run」 으로 단순 추정하고 근거에 표시한다. 포털 수동 배포는 모르므로 화면에 「추정」과 근거를 같이 보여 준다 |
 | 스테이징에만 있는 커밋 | `git log --cherry-pick <운영SHA>...origin/deploy/prod` |
 
 이슈 키별 단계(높은 것이 이김): 브랜치만 → PR 열림 → develop 머지(develop 대상 PR 머지 또는 develop 에만 있는 커밋) → 스테이징(deploy/prod 대상 PR 머지 또는 스테이징에만 있는 커밋) → 운영(deploy/prod 머지 커밋이 운영 SHA 의 조상). 운영인데 같은 키의 커밋이 스테이징에 또 있으면 스테이징으로 내리고 꼬리표를 단다.
@@ -91,7 +91,7 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 ## 변경 감시(거의 실시간)
 서버가 켜져 있으면 기본으로 돈다(`--no-watch` 로 끔).
 - 30초마다(`--check`) 레포별로 가벼운 조회 2건 — `git ls-remote --heads origin`(브랜치 끝 커밋 전체 1회)과 가장 최근 갱신된 PR 시각(API 1회). 지난번과 다르면 그 레포만 다시 수집해 `state.json` 에 합친다(`merge_state`).
-- 1분마다(`--swap-check`) 리소스 그룹 사이트의 마지막 swap 시각(slotSwapStatus, az 1회 약 5~9초)을 보고 바뀌면 그 레포를 다시 수집한다. 이 값은 활동 기록(3~5분 늦음)보다 빨라서, 활동 기록에 아직 없는 swap 은 「잠정」으로 운영 SHA 를 추정하고 카드에 표시한다. 활동 기록에 확정이 올라오면 다시 수집해 잠정을 푼다(감시가 앱 활동 기록을 15분 동안은 매 주기, 그 뒤 6시간까지는 10분마다 확인).
+- 1분마다(`--swap-check`) 리소스 그룹 사이트의 마지막 swap 시각(slotSwapStatus, az 1회 약 5~9초)을 보고 바뀌면 그 레포를 다시 수집한다. 이 값은 활동 기록(3~5분 늦음)보다 빨라서, 활동 기록에 아직 없는 swap 은 「잠정」으로 운영 SHA 를 추정하고 카드에 표시한다. 활동 기록에 확정이 올라오면 다시 수집해 잠정을 푼다(감시가 앱 활동 기록을 15분 동안은 매 주기, 그 뒤 6시간까지는 10분마다 확인). 활동 기록의 같은 swap 이벤트(사람 호출·처리)는 correlationId 로 묶는다. 감지한 변경의 다시 수집이 실패하면 그 레포를 5분 뒤 다시 수집한다(이어 실패하면 간격을 두 배씩, 최대 1시간).
 - 화면은 10초마다 `/api/status` 를 물어 `collected_at` 이 바뀌면 다시 그린다 → 단계가 바뀐 캐릭터가 걸어간다.
 - 비용(실측, 레포 3개): tick 이 30초 대기 + 약 13초 조회라 실제 간격은 약 43초. 변화가 없을 때 시간당 GitHub REST 약 250건 + ls-remote 약 250회, Azure 약 90건. 한도(GitHub 5,000/h, Azure 12,000/h)의 5% 아래.
 
@@ -103,7 +103,7 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 배포 방식에 따라 두 모드 중 하나:
 | 모드 | 키 | 스테이징 | 운영 | 예 |
 |---|---|---|---|---|
-| swap | `app`(Azure App Service 이름) | `deploy/prod` HEAD(= staging 슬롯) | 마지막 swap 이전 마지막 성공 run 의 SHA(추정) | adminsite·pilldocsite·agentapiv2·adpssite |
+| swap | `app`(Azure App Service 이름) | `deploy/prod` HEAD(= staging 슬롯) | 배포·swap 순서 추적으로 구한 SHA(추정) | adminsite·pilldocsite·agentapiv2·adpssite |
 | 브랜치 | `staging_branch`·`prod_branch`·선택 `hosts{staging,prod}` | 스테이징 브랜치 HEAD | 운영 브랜치의 마지막 성공 배포 run 의 SHA(머지가 곧 배포, swap 없음) | pillcheckver2frontend(Vercel: `deploy/dev`→staging.pillchk.com, `deploy/prod`→www.pillcheck.co.kr) |
 
 브랜치 모드에서는 변경 감시가 운영 브랜치의 마지막 run 상태도 함께 본다(배포 run 이 끝나야 운영이 바뀌므로). 화면의 레포 순서는 제목 옆 ▲▼ 로 바꾸며 브라우저(localStorage)에 기억된다 — `repos.json` 순서는 기본값일 뿐이다.

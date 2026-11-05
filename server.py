@@ -127,13 +127,16 @@ if os.path.exists(STATE):
 
 
 def refresh(only=None):
-    """수집 실행(동기). only 가 있으면 그 레포만 수집해 기존 state 에 합친다."""
+    """수집 실행(동기). only 가 있으면 그 레포만 수집해 기존 state 에 합친다.
+    돌려주는 값: 이미 수집 중이라 시작 못 했으면 None, 아니면 실패한 레포 이름 목록(예외면 대상 전부, 결과에 errors 가 있는 레포)."""
     with lock:
         if status["running"]:
-            return False
+            return None
         status.update(running=True, running_repos=only, started_at=now(), last_error=None)
+    failed = []
     try:
         state = collector.Collector(collector.load_cfg()).collect(only)
+        failed = [r["name"] for r in state.get("repos", []) if r.get("errors")]
         if only:
             state = collector.merge_state(state, STATE)
         collector.write_state(state, STATE)
@@ -141,21 +144,66 @@ def refresh(only=None):
         do_publish()
     except Exception:
         status["last_error"] = traceback.format_exc()[-800:]
+        failed = list(only) if only else [rc["name"] for rc in (_safe_cfg().get("repos") or [])]
     finally:
         with lock:
             status.update(running=False, running_repos=None, finished_at=now())
             status["runs"] += 1
-    return True
+    return failed
+
+
+def _safe_cfg():
+    try:
+        return collector.load_cfg()
+    except Exception:
+        return {}
+
+
+publish_lock = threading.Lock()
 
 
 def do_publish():
-    """--publish 대상이 있으면 방금 쓴 state.json 을 올린다(실패는 화면 꼬리표로)."""
+    """--publish 대상이 있으면 방금 쓴 state.json 을 올린다(실패는 화면 꼬리표로, 다시 올리기는 PublishRetry)."""
     if not OPT["publish"]:
         return
-    err = publish.publish(OPT["publish"], STATE)
-    status["publish"].update(last=now(), error=err)
-    if not err:
-        status["publish"]["ok_at"] = status["publish"]["last"]
+    with publish_lock:   # 수집 뒤 올리기와 재시도가 겹쳐 같은 파일을 두 번 동시에 올리지 않게
+        err = publish.publish(OPT["publish"], STATE)
+        status["publish"].update(last=now(), error=err)
+        if not err:
+            status["publish"]["ok_at"] = status["publish"]["last"]
+
+
+class PublishRetry(threading.Thread):
+    """마지막 올리기가 실패했으면 1분 뒤부터 다시 올린다. 실패가 이어지면 2분·4분·… 최대 5분 간격. 수집 중이면 미룬다
+    (수집이 끝나면 어차피 올린다)."""
+
+    def __init__(self, tick_s=15, first_s=60, max_s=300):
+        super().__init__(daemon=True)
+        self.tick_s, self.first_s, self.max_s = tick_s, first_s, max_s
+        self.fails, self.next_at = 0, None
+
+    def step(self, t):
+        p = status.get("publish") or {}
+        if not p.get("error"):
+            self.fails, self.next_at = 0, None
+            return False
+        if self.next_at is None:
+            self.next_at = t + min(self.first_s * 2 ** self.fails, self.max_s)
+        if t < self.next_at or status["running"]:
+            return False
+        do_publish()
+        self.fails = self.fails + 1 if (status.get("publish") or {}).get("error") else 0
+        self.next_at = None
+        return True
+
+    def run(self):
+        while True:
+            time.sleep(self.tick_s)
+            try:
+                self.step(time.time())
+            except Exception:   # 다음 차례에 다시. 화면 꼬리표로 남긴다
+                if status.get("publish") is not None:
+                    status["publish"]["error"] = "재시도 오류: " + traceback.format_exc()[-300:]
 
 
 _state_mtime = [None]
@@ -240,6 +288,8 @@ class Watcher(threading.Thread):
         self.swap = {}      # repo -> 마지막 swap 시각
         self.last_swap_check = 0
         self.confirm_at = {}  # repo -> 마지막 확정 확인 시각(time.time)
+        self.retry = {}       # repo -> (이유, 다시 수집할 시각, 실패 횟수) — 감지한 변경의 수집이 실패한 레포
+        self.retry_s, self.retry_max_s = 300, 3600   # 첫 재시도 5분, 실패가 이어지면 두 배씩 최대 1시간
         status["watch"].update(enabled=True, check_s=check_s, swap_check_s=swap_s)
 
     def run(self):
@@ -311,6 +361,9 @@ class Watcher(threading.Thread):
                         changed.append((name, "swap 확정"))
                 except Exception as e:   # 이 앱 확인만 실패 — 이미 감지한 다른 변경은 그대로 수집한다
                     swap_err = f"{name} swap 확정 확인 실패 — {e}"
+        for name, (why, at, _) in list(self.retry.items()):
+            if time.time() >= at and name not in {n for n, _ in changed}:
+                changed.append((name, f"재시도({why})"))
         if do_swap:
             self.last_swap_check = time.time()
             status["watch"]["last_swap_check"] = now()
@@ -323,7 +376,17 @@ class Watcher(threading.Thread):
             names = sorted({n for n, _ in changed})
             while status["running"]:   # 수동 새로고침 중이면 끝날 때까지 기다린다
                 time.sleep(1)
-            refresh(names)
+            failed = refresh(names)
+            if failed is None:         # 그사이 다른 수집이 먼저 시작함 — 전부 나중에 다시
+                failed = names
+            whys = {n: w for n, w in changed if not w.startswith("재시도(")}
+            for name in names:   # 지문은 이미 새 값이라 다시 감지되지 않는다 → 실패한 레포는 따로 기억해 다시 수집
+                if name in failed:
+                    why0, _, n = self.retry.get(name, ("", 0, 0))
+                    wait = min(self.retry_s * 2 ** n, self.retry_max_s)
+                    self.retry[name] = (whys.get(name) or why0, time.time() + wait, n + 1)
+                else:
+                    self.retry.pop(name, None)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -483,6 +546,7 @@ def main():
         OPT["publish"] = a.publish
         status["publish"] = {"target": a.publish, "last": None, "ok_at": None, "error": None}
         threading.Thread(target=do_publish, daemon=True).start()   # 지금 가진 state 부터 한 번 올린다
+        PublishRetry().start()
     if a.allow_swap:
         OPT["token"] = secrets.token_urlsafe(24)
         global SWAP_LOG
