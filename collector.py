@@ -8,6 +8,7 @@
 import argparse
 import datetime as dt
 import json
+import locale
 import os
 import re
 import shutil
@@ -36,7 +37,10 @@ def sh(args, timeout=120, cwd=None):
     p = subprocess.run(args, capture_output=True, timeout=timeout, env=env, cwd=cwd)
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(args[:3])}… rc={p.returncode}: {p.stderr.decode('utf-8', 'replace')[:400]}")
-    return p.stdout.decode("utf-8", "replace")
+    try:
+        return p.stdout.decode("utf-8")
+    except UnicodeDecodeError:   # Windows 의 az.cmd 는 PYTHONIOENCODING 을 무시하고 cp949 로 내보낼 때가 있다(구독 이름 등 한글)
+        return p.stdout.decode(locale.getpreferredencoding(False) or "utf-8", "replace")
 
 
 def gh_json(args, timeout=120):

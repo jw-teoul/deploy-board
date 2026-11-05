@@ -31,9 +31,16 @@ python -m unittest test_collector test_swap   # 단계 판정·swap 권한 판�
 - 버튼은 이럴 때 꺼진다: 권한 없음, 다른 swap 진행 중, 스테이징 배포 run 진행 중, 운영 SHA 미확인, 스테이징에만 있는 커밋 없음, 그 레포를 다시 수집하는 중.
 - swap 을 누르면 모달 다이얼로그(Modal Dialog, 뒤 화면을 막고 확인을 받는 창)가 열려 운영·스테이징 SHA, 나갈 커밋·이슈 키, 실행 명령을 보여 준다. 앱 이름을 그대로 입력해야 실행 버튼이 켜지고 Esc 로 닫힌다. 실행: `az webapp deployment slot swap -g <리소스 그룹> -n <앱> --slot staging --target-slot production`(15분 제한).
 - 끝나면 토스트(Toast, 잠깐 떴다 사라지는 알림)로 결과를 알리고 그 레포만 다시 수집한다. 이 보드에서 한 swap 은 30분 동안 「되돌리기」(같은 명령으로 다시 맞바꿈)가 보인다.
-- 모든 실행은 `data/swap-log.jsonl` 에 남는다(누가·언제·무엇을·결과). Azure 활동 기록에도 내 이름으로 남는다.
+- 모든 실행은 `data/swap-log.jsonl` 에 남는다(누가·언제·무엇을·결과). Azure 활동 기록에도 내 이름으로 남는다. swap 할 때 서버가 `state.json` 에서 그 순간 나가는 이슈·커밋 목록(스냅숏)을 만들어 같이 남긴다(화면이 보낸 값은 참고로만 `client` 에).
+- 헤더에 이 PC 의 로그인 상태(`az: 계정 (구독) · gh: 계정`)가 보인다(127.0.0.1 바인딩일 때만, 1시간마다 확인). 로그인이 풀렸으면 「로그인 필요」가 빨갛게 뜨고 툴팁에 `az login`·`gh auth login` 이 보인다. 터미널에서 로그인한 뒤 「권한 다시 확인」 버튼을 누르면 로그인 상태와 앱별 swap 권한을 바로 다시 조회한다(`POST /api/recheck`, swap 과 같은 토큰·주소 확인, 겹쳐 누르면 409).
 - 다른 사이트·다른 PC 에서 swap 요청을 못 보내게 막는다: 127.0.0.1 바인딩 + 접속 주소 loopback 확인 + Host·Origin 확인 + 시작할 때 만든 토큰(화면에만 심고 `X-Board-Token` 헤더로 받음).
-- 시험은 실제 az 대신 가짜 명령으로 한다: `DEPLOY_BOARD_SWAP_CMD='python -c "import time;time.sleep(3)"' python server.py --allow-swap --bind 127.0.0.1`. 헤더에 「swap 켜짐 (가짜 명령)」이 보인다.
+- 시험은 실제 az 대신 가짜 명령으로 한다: `DEPLOY_BOARD_SWAP_CMD='python -c "import time;time.sleep(3)"' python server.py --allow-swap --bind 127.0.0.1`. 헤더에 「swap 켜짐 (가짜 명령)」이 보인다. 가짜 명령 기록은 `data/swap-log.fake.jsonl` 에 따로 남아 실제 기록·알림 문구와 섞이지 않는다.
+
+## 배포 알림 문구(복사용 — 보드는 보내지 않음)
+- swap 앱이 있는 레포 카드 머리의 「알림 문구」 버튼을 누르면 모달 다이얼로그가 열리고 Slack 에 붙여 넣을 문구 두 개가 나온다. 「복사」로 클립보드에 넣고 Esc 로 닫는다. 세 실행 방법 모두에서 보인다.
+  - 예고: 지금 스테이징에만 있는 커밋(swap 하면 운영에 나갈 것)을 이슈 키별로 묶는다. 제목은 PR 제목 → 커밋 첫 줄(Jira 는 읽지 않음).
+  - 결과: 이 PC 의 마지막 swap 기록의 스냅숏으로 「반영 완료」를 만들고 추가·수정·변경으로 나눈다(conventional 접두어 `feat`·`fix` 와 「추가」「수정」 같은 낱말로 판정). 실패·되돌리기 기록이면 그 문구가, 공유 서버에서는 「swap 한 PC 에서 확인」 안내가 나온다.
+- 사내 글 형식을 따른다: 첫 줄 결론(`*굵게*`), `•` 한 줄 불릿 5개까지(넘으면 「외 N건」), 300자·8줄 안(넘으면 제목을 줄임). 코드 `notice.py`, API `GET /api/notice?repo=<이름>`.
 
 ## 공유 서버(개발 서버) 설치·갱신·끄기
 개발 서버 `edbdev-ubuntu22-svr`(ssh 별칭 `datacrawler`)에 systemd 사용자 서비스로 띄운다. 8765 는 다른 프로그램이 쓰고 있어 8790 을 쓴다.

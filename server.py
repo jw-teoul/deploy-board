@@ -25,8 +25,10 @@ import time
 import traceback
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 import collector
+import notice
 import publish
 import swap
 
@@ -87,6 +89,7 @@ status = {
     "watch": {"enabled": False, "check_s": 0, "swap_check_s": 0, "last_check": None, "last_swap_check": None,
               "changes": {}, "probe_error": None, "checks": 0},
     "mode": "local", "swap": {"enabled": False}, "publish": None,
+    "accounts": None,   # 이 PC 의 az·gh 로그인(loopback 바인딩일 때만 채움 — 남에게 계정 이름을 보이지 않게)
 }
 lock = threading.Lock()
 if os.path.exists(STATE):
@@ -159,6 +162,46 @@ def start_refresh(only=None):
         return False
     threading.Thread(target=refresh, args=(only,), daemon=True).start()
     return True
+
+
+def load_state():
+    if not os.path.exists(STATE):
+        return None
+    with open(STATE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def repo_state(name):
+    return next((r for r in (load_state() or {}).get("repos", []) if r.get("name") == name), None)
+
+
+def check_accounts():
+    status["accounts"] = swap.whoami()
+
+
+def account_loop(every_s=3600):
+    while True:
+        try:
+            check_accounts()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(every_s)
+
+
+def notice_for(name):
+    """배포 알림 문구 초안 — 예고(지금 스테이징에만 있는 것)와 결과(이 PC 의 마지막 swap 기록)."""
+    r = repo_state(name)
+    if not r:
+        return {"error": "없는 레포"}
+    snap = notice.snapshot(r)
+    pre, pre_why = notice.preview_text(snap)
+    rec = None if OPT["readonly"] else notice.last_record(SWAP_LOG, name)
+    res, res_why = notice.result_text(rec)
+    if OPT["readonly"] and not res:
+        res_why = "공유 서버에는 swap 기록이 없음 — swap 한 PC 의 보드에서 확인"
+    return {"repo": name, "label": snap["label"], "collected_at": (load_state() or {}).get("collected_at"),
+            "preview": pre, "preview_why": pre_why, "result": res, "result_why": res_why,
+            "result_at": (rec or {}).get("finished_at")}
 
 
 class Watcher(threading.Thread):
@@ -259,6 +302,10 @@ class Handler(SimpleHTTPRequestHandler):
             if OPT["readonly"]:
                 sync_collected_at()
             return self._json(status)
+        if path == "/api/notice":
+            q = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            out = notice_for((q.get("repo") or [""])[0])
+            return self._json(out, 404 if "error" in out else 200)
         if path in ("/", "/index.html"):
             return self._index()
         return super().do_GET()
@@ -288,8 +335,23 @@ class Handler(SimpleHTTPRequestHandler):
             if bad:
                 return self._json({"error": bad}, 403)
             body = self._body()
-            ok, why = OPT["swap"].start(body.get("repo"), body.get("action"), body.get("info"))
+            info = {"client": body.get("info") or {}}
+            if body.get("action") == "swap":   # 나간 것의 목록은 화면 값이 아니라 서버의 state.json 으로 남긴다
+                r = repo_state(body.get("repo"))
+                if r:
+                    info["snapshot"] = notice.snapshot(r)
+            ok, why = OPT["swap"].start(body.get("repo"), body.get("action"), info)
             return self._json({"started": ok, "reason": why, "status": status}, 202 if ok else 409)
+        if path == "/api/recheck":
+            if not OPT["swap"]:
+                return self._json({"error": "swap 이 꺼진 서버"}, 403)
+            bad = self._swap_guard()
+            if bad:
+                return self._json({"error": bad}, 403)
+            if not OPT["swap"].begin_check():   # 「권한 다시 확인」: 로그인 상태와 swap 권한을 다시 조회(백그라운드)
+                return self._json({"started": False, "reason": "이미 확인 중", "status": status}, 409)
+            threading.Thread(target=OPT["swap"].run_check, args=(check_accounts,), daemon=True).start()
+            return self._json({"started": True, "status": status}, 202)
         if path == "/api/refresh" and OPT["readonly"]:
             return self._json({"error": "보기 전용 서버 — 수집은 수집 PC 에서 한다"}, 403)
         if path == "/api/refresh":
@@ -327,10 +389,15 @@ def main():
         threading.Thread(target=do_publish, daemon=True).start()   # 지금 가진 state 부터 한 번 올린다
     if a.allow_swap:
         OPT["token"] = secrets.token_urlsafe(24)
+        global SWAP_LOG
+        if os.environ.get("DEPLOY_BOARD_SWAP_CMD"):   # 가짜 명령 시험 기록은 실제 swap 기록과 섞지 않는다(알림 결과 문구가 읽음)
+            SWAP_LOG = SWAP_LOG.replace(".jsonl", ".fake.jsonl")
         OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap)
         status["mode"] = "swap"
         status["swap"] = OPT["swap"].status
         threading.Thread(target=OPT["swap"].perm_loop, daemon=True).start()
+    if not a.readonly and a.bind in LOOPBACK:
+        threading.Thread(target=account_loop, daemon=True).start()
     if not a.no_collect:
         start_refresh()
     if not a.no_watch:

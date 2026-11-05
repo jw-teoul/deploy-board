@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import collector
 
@@ -47,12 +48,30 @@ def swap_allowed(perms, action=SWAP_ACTION):
     return False, blocked_by or "swap 을 허용하는 역할 없음"
 
 
+def whoami(run=None):
+    """이 PC 의 az·gh 로그인 상태 → {"az": {...}, "gh": {...}, "checked_at"}. 로그인은 하지 않고 확인만 한다.
+    run 은 시험용(collector.sh 대체)."""
+    run = run or collector.sh
+    out = {"checked_at": now()}
+    try:
+        d = json.loads(run(["az", "account", "show", "--query", "{user:user.name, sub:name}", "-o", "json"], timeout=30) or "{}")
+        out["az"] = {"ok": True, "user": d.get("user"), "sub": d.get("sub")}
+    except Exception as e:
+        out["az"] = {"ok": False, "reason": "az login 필요 또는 확인 실패 — " + str(e)[:200]}
+    try:
+        out["gh"] = {"ok": True, "user": run(["gh", "api", "user", "--jq", ".login"], timeout=30).strip()}
+    except Exception as e:
+        out["gh"] = {"ok": False, "reason": "gh auth login 필요 또는 확인 실패 — " + str(e)[:200]}
+    return out
+
+
 class SwapRunner:
     """swap·되돌리기를 한 번에 한 건만 백그라운드로 실행하고 상태를 status dict 에 비춘다."""
 
     def __init__(self, cfg_loader, log_path, on_done):
         self.cfg_loader, self.log_path, self.on_done = cfg_loader, log_path, on_done
         self.lock = threading.Lock()
+        self.check_lock = threading.Lock()
         self.fake = os.environ.get("DEPLOY_BOARD_SWAP_CMD")
         self.status = {"enabled": True, "fake": bool(self.fake), "perms": {}, "perms_checked_at": None,
                        "job": None, "last": None, "undo": {}, "undo_minutes": UNDO_MINUTES,
@@ -71,9 +90,7 @@ class SwapRunner:
                 if rc.get("app"):
                     self.status["perms"][rc["name"]] = {"ok": False, "reason": f"az 로그인 확인 실패 — {e}"[:300]}
             return
-        for rc in cfg["repos"]:
-            if not rc.get("app"):
-                continue
+        def one(rc):   # az 호출이 한 번에 10초 넘게 걸려 레포별로 동시에 묻는다
             url = f"https://management.azure.com{self.site_id(cfg, sub, rc['app'])}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
             try:
                 d = json.loads(collector.sh(["az", "rest", "--method", "get", "--url", url], timeout=60) or "{}")
@@ -81,15 +98,38 @@ class SwapRunner:
                 self.status["perms"][rc["name"]] = {"ok": ok, "reason": why}
             except Exception as e:
                 self.status["perms"][rc["name"]] = {"ok": False, "reason": f"권한 조회 실패 — {e}"[:300]}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(one, [rc for rc in cfg["repos"] if rc.get("app")]))
         self.status["perms_checked_at"] = now()
 
     def perm_loop(self, every_s=3600):
         while True:
-            try:
-                self.check_perms()
-            except Exception:
-                traceback.print_exc()
+            self.recheck()
             time.sleep(every_s)
+
+    def begin_check(self):
+        """다시 확인을 잡는다 — 이미 도는 중이면 False(겹쳐 누름 방지). 잡았으면 run_check 가 놓는다."""
+        if not self.check_lock.acquire(blocking=False):
+            return False
+        self.status["checking"] = True
+        return True
+
+    def run_check(self, before=None):
+        try:
+            if before:
+                before()
+            self.check_perms()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.status["checking"] = False
+            self.check_lock.release()
+
+    def recheck(self, before=None):
+        if not self.begin_check():
+            return False
+        self.run_check(before)
+        return True
 
     # ---------- 실행 ----------
     def command(self, cfg, app):
