@@ -5,26 +5,27 @@
 ## 실행 방법 — 코드는 하나, 실행 방법은 셋
 | 실행 방법 | 명령 | 수집 | 새로고침 | swap |
 |---|---|---|---|---|
-| 기본 | `python server.py` | 함 | 됨 | 없음 |
-| 공유용(개발 서버) | `python3 server.py --readonly --port 8790` | 안 함(올려 준 결과만 보여 줌) | 안 됨(403) | 없음(403) |
-| 내 PC 용 | `python server.py --allow-swap --bind 127.0.0.1` | 함 | 됨 | 있음 |
+| 기본 | `python server.py` | 함 | 됨 | 웹 로그인(각자 Microsoft 계정) |
+| 공유용(개발 서버) | `python3 server.py --readonly --port 8790` | 안 함(올려 준 결과만 보여 줌) | 안 됨(403) | 웹 로그인(각자 Microsoft 계정) |
+| 내 PC 용 | `python server.py --allow-swap --bind 127.0.0.1` | 함 | 됨 | 이 PC 의 az(웹 로그인 꺼짐) |
 
-- 코드에서 막는 것: `--readonly` 를 `--allow-swap`·`--publish` 와 같이 주면 시작하지 않는다. `--allow-swap` 은 `--bind` 가 127.0.0.1·localhost·::1 일 때만 시작한다(기본 0.0.0.0 이면 거부). 화면은 서버가 swap 을 켰다고 알려 줄 때만 버튼을 그린다.
+- 코드에서 막는 것: `--readonly` 를 `--allow-swap`·`--publish` 와 같이 주면 시작하지 않는다. `--allow-swap` 은 `--bind` 가 127.0.0.1·localhost·::1 일 때만 시작한다(기본 0.0.0.0 이면 거부). 화면은 서버가 swap 을 켰다고 알려 주거나 웹 로그인으로 권한을 확인했을 때만 버튼을 그린다.
 - 헤더 꼬리표로 지금 실행 방법을 보여 준다: 「공유 보기 전용」(30분 넘게 안 올라오면 「수집 PC 꺼짐?」), 「swap 켜짐」, 「공유 서버로 올림」.
 - 수집 결과를 공유 서버에 올리려면 수집하는 PC 에서 `--publish datacrawler:deploy-board/data/state.json` 을 붙인다(수집이 끝날 때마다 ssh 로 임시 파일에 쓴 뒤 바꿔 끼운다). 로컬 경로도 된다. 따로 한 번만: `python publish.py <대상>`.
 
 ```
 python server.py --no-collect --open --check 30 --swap-check 120   # --no-watch 로 감시 끄기
 python collector.py --repo adminsite   # 수집만(서버 없이) → data/state.json
-python -m unittest test_collector test_swap   # 단계 판정·swap 권한 판정 테스트
+python -m unittest   # 단계 판정·swap 권한 판정·화면 보안 헤더 테스트(test_*.py)
+node test_weblogin.js                         # 웹 로그인 권한 판정(perm_cases.json 을 Python 과 같이 씀)
 ```
 전제(수집하는 PC): `gh`(GitHub 로그인)·`az`(Azure 로그인, Reader)·`git` 이 있고, `../projects/<repo>` 에 기준 클론이 있다(수집기는 `git fetch` 만 하고 checkout 하지 않는다). 공유 서버에는 Python 3 만 있으면 된다.
 
 ## 주의 — 내 계정으로 나가는 요청
-- 수집은 **실행한 사람의 `gh`·`az`·SSH 자격 증명**으로 돈다. 기본·공유용 실행에서 호출은 전부 읽기(git fetch/ls-remote/log, gh pr list·run list·GET pulls, az account show·activity-log list·webapp show·slot list·권한 조회)이고 쓰기·삭제·swap 실행은 없다. **쓰기는 `--allow-swap` 으로 띄우고 화면에서 직접 확인한 swap·되돌리기 하나뿐이다.**
+- 수집은 **실행한 사람의 `gh`·`az`·SSH 자격 증명**으로 돈다. 기본·공유용 실행에서 호출은 전부 읽기(git fetch/ls-remote/log, gh pr list·run list·GET pulls, az account show·activity-log list·webapp show·slot list·권한 조회)이고 쓰기·삭제·swap 실행은 없다. **쓰기는 `--allow-swap` 으로 띄우고 화면에서 직접 확인한 swap·되돌리기 하나뿐이다.** 웹 로그인 swap 은 서버가 아니라 그 사람의 브라우저가 자기 Microsoft 계정으로 보낸다(아래 절).
 - 공유 서버에는 Azure·GitHub 로그인과 토큰을 두지 않는다. 공유용 실행은 수집하지 않으므로 필요 없다. 변경 감시가 켜져 있으면 실측 시간당 GitHub REST 약 250건, Azure 읽기 약 90건, 레포당 `ls-remote` 약 85회가 계속 나간다(한도의 5% 아래).
 - 서버는 **모든 주소(0.0.0.0)에 열리고 인증이 없다.** `POST /api/refresh` 를 같은 망의 누구나 부를 수 있고, 그러면 수집이 내 계정으로 돈다(실행 중이면 409 로 거절하므로 최대 70초에 한 번). 혼자 볼 때는 상관없지만 남에게 주소를 알려 주거나 공용 망에서 띄울 때는 `--bind 127.0.0.1` 로 묶거나 방화벽으로 8765 를 막는다. 외부 접근 주소에는 그대로 올리지 않는다.
-- `data/state.json` 에는 브랜치·커밋 메시지·PR 제목·swap 실행자 이메일이 들어 있다. gitignore 되어 있으니 레포에 올리지 말고, 공유 서버로 올릴 때도 같은 망 사람이 보게 된다는 점을 안다.
+- `data/state.json` 에는 브랜치·커밋 메시지·PR 제목·swap 실행자 이메일, 구독 ID·리소스 그룹(`azure`, 웹 로그인 swap 주소용)이 들어 있다. gitignore 되어 있으니 레포에 올리지 말고, 공유 서버로 올릴 때도 같은 망 사람이 보게 된다는 점을 안다.
 
 ## swap (내 PC 용 `--allow-swap`)
 - 시작할 때와 1시간마다 앱별로 내 권한을 조회한다(`GET {site}/providers/Microsoft.Authorization/permissions` — 역할마다 `actions` 에 맞고 `notActions` 에 안 걸리면 허용, 역할끼리는 합집합). 권한이 없으면 버튼이 꺼지고 툴팁(Tooltip, 마우스를 올리면 뜨는 짧은 설명)에 이유가 보인다.
@@ -35,6 +36,17 @@ python -m unittest test_collector test_swap   # 단계 판정·swap 권한 판�
 - 헤더에 이 PC 의 로그인 상태(`az: 계정 (구독) · gh: 계정`)가 보인다(127.0.0.1 바인딩일 때만, 1시간마다 확인). 로그인이 풀렸으면 「로그인 필요」가 빨갛게 뜨고 툴팁에 `az login`·`gh auth login` 이 보인다. 터미널에서 로그인한 뒤 「권한 다시 확인」 버튼을 누르면 로그인 상태와 앱별 swap 권한을 바로 다시 조회한다(`POST /api/recheck`, swap 과 같은 토큰·주소 확인, 겹쳐 누르면 409).
 - 다른 사이트·다른 PC 에서 swap 요청을 못 보내게 막는다: 127.0.0.1 바인딩 + 접속 주소 loopback 확인 + Host·Origin 확인 + 시작할 때 만든 토큰(화면에만 심고 `X-Board-Token` 헤더로 받음).
 - 시험은 실제 az 대신 가짜 명령으로 한다: `DEPLOY_BOARD_SWAP_CMD='python -c "import time;time.sleep(3)"' python server.py --allow-swap --bind 127.0.0.1`. 헤더에 「swap 켜짐 (가짜 명령)」이 보인다. 가짜 명령 기록은 `data/swap-log.fake.jsonl` 에 따로 남아 실제 기록·알림 문구와 섞이지 않는다.
+
+## 웹 로그인 swap (기본·공유용 — 각자 Microsoft 계정)
+- 헤더의 「Microsoft 로그인」 버튼을 누르면 회사 Microsoft(Entra) 로그인 화면으로 넘어갔다가 돌아온다(인가 코드 + PKCE, MSAL.js `web/vendor/msal-browser.min.js` v5.26.0 을 파일로 둠, CDN 안 씀). 돌아오면 헤더에 이름과 「로그아웃」이 보인다.
+- 로그인하면 브라우저가 앱별로 그 사람의 권한을 조회하고(위와 같은 permissions API·같은 판정 규칙), 권한이 있는 앱만 swap 버튼이 켜진다. 꺼지는 조건·모달 다이얼로그·앱 이름 입력 확인·30분 되돌리기는 위 절과 같다.
+- 실행하면 브라우저가 ARM 에 직접 `POST {site}/slots/staging/slotsswap?api-version=2023-12-01 {"targetSlot":"production","preserveVnet":true}` 를 보내고, 202 의 작업 주소(못 읽으면 사이트의 `slotSwapStatus.timestampUtc` 변화)를 5초마다 15분까지 확인한 뒤 토스트로 결과를 알린다. 보드 화면은 다음 수집 때 바뀐다(수집 PC 가 2분 안에 감지).
+- **토큰은 그 브라우저의 sessionStorage 에만 있고 보드 서버로 보내지 않는다.** 서버에는 Azure 로그인·토큰이 없다. 기록은 Azure 활동 기록에 그 사람 이름으로 남는다(`data/swap-log.jsonl` 에는 안 남음). 되돌리기 정보는 그 브라우저 localStorage `webUndo:<계정>` 에 30분.
+- 웹 swap 이 끝나면 보드가 그 swap 을 반영할 때까지(레포의 마지막 swap 시각이 이번 swap 뒤가 될 때까지) 같은 레포의 swap 버튼을 막고 되돌리기만 허용한다(낡은 「나갈 커밋」으로 다시 눌러 방금 swap 을 뒤집지 않게). 진행 중 swap 은 localStorage 로 같은 브라우저의 다른 탭과 나누고, 새로고침해도 swap 시각으로 이어서 기다린다. 되돌리기 전에는 그 사이 다른 swap 이 없었는지 사이트의 swap 시각으로 확인한다.
+- 기다리는 중에 로그인이 만료돼도 화면을 떠나지 않는다(다시 로그인 화면으로 넘어가면 결과·되돌리기 기록을 잃음). 토큰은 ARM 주소(`https://management.azure.com/`)로만 보낸다.
+- 설정: `repos.json` 의 `entra{tenant_id, client_id}`(공개값). 구독 ID·리소스 그룹은 수집 결과 `state.json` 의 `azure` 에서 읽는다. `--allow-swap` 실행에서는 서버 swap 을 쓰므로 웹 로그인이 꺼진다.
+- 로그인되는 주소는 Entra 앱에 리디렉션 URI 로 등록된 곳뿐이다: `http://localhost:8765/`, `http://localhost:8790/`, 개발 서버 Tailscale 주소. `127.0.0.1` 로 열면 로그인 불가 안내가 나온다.
+- 화면에는 CSP(`script-src 'self'` + 인라인 스크립트 해시, `connect-src` 는 login.microsoftonline.com·management.azure.com 만)와 `Referrer-Policy: no-referrer` 를 건다.
 
 ## 배포 알림 문구(복사용 — 보드는 보내지 않음)
 - swap 앱이 있는 레포 카드 머리의 「알림 문구」 버튼을 누르면 모달 다이얼로그가 열리고 Slack 에 붙여 넣을 문구 두 개가 나온다. 「복사」로 클립보드에 넣고 Esc 로 닫는다. 세 실행 방법 모두에서 보인다.

@@ -1,0 +1,16 @@
+{"_": "swap 권한 판정 공통 사례 — swap.py(test_swap.py)와 web/weblogin.js(test_weblogin.js)가 같은 답을 내는지 둘 다 이 파일로 확인한다.",
+ "allowed": [
+  {"name": "open", "perms": [{"actions": ["Microsoft.Web/sites/*"], "notActions": []}, {"actions": ["*/read"], "notActions": []}], "ok": true},
+  {"name": "blocked", "perms": [{"actions": ["Microsoft.Web/sites/*"], "notActions": ["Microsoft.Web/sites/slotsswap/Action", "Microsoft.Web/sites/delete"]}, {"actions": ["*/read"], "notActions": []}], "ok": false, "why": "slotsswap"},
+  {"name": "other role allows", "perms": [{"actions": ["Microsoft.Web/sites/*"], "notActions": ["Microsoft.Web/sites/slotsswap/Action"]}, {"actions": ["*"], "notActions": []}], "ok": true},
+  {"name": "read only", "perms": [{"actions": ["*/read"], "notActions": []}], "ok": false},
+  {"name": "empty", "perms": [], "ok": false},
+  {"name": "null", "perms": null, "ok": false},
+  {"name": "case-insensitive deny", "perms": [{"actions": ["*"], "notActions": ["microsoft.web/sites/SLOTSSWAP/action"]}], "ok": false},
+  {"name": "regex chars in pattern", "perms": [{"actions": ["Microsoft.Web/sites/slotsswap/Action(x)"], "notActions": []}], "ok": false}
+ ],
+ "match": [
+  ["microsoft.web/SITES/*", true], ["*", true], ["Microsoft.Web/sites/slots/*", false], ["Microsoft.Web/sites/slotsswap", false],
+  ["Microsoft.Web/*/slotsswap/Action", true], [".*", false]
+ ]
+}

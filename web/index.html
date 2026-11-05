@@ -111,6 +111,7 @@
   <button id="refresh" class="primary">새로고침</button>
   <span id="collected" class="small mute"></span>
   <span id="modeTag" class="small"></span>
+  <span id="weblogin" class="small" hidden></span>
   <span id="acct" class="small mute" hidden></span><button id="recheck" hidden title="az·gh 로그인과 앱별 swap 권한을 지금 다시 조회합니다(평소엔 1시간마다)">권한 다시 확인</button>
   <span id="watch" class="small mute" title="서버가 30초마다 레포 변경(브랜치 끝 커밋·PR 갱신)을, 2분마다 Azure swap 을 확인해 바뀐 레포만 다시 수집합니다. 이 화면은 10초마다 서버 상태를 물어 바뀌면 자동 반영합니다."></span>
   <span style="flex:1"></span>
@@ -164,7 +165,7 @@
       </div>
       <div>
         <h4>정보를 어떻게 모으나</h4>
-        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음). 예외는 하나 — 실행한 사람이 자기 PC 에서 <code>--allow-swap</code> 으로 띄운 화면에만 swap·되돌리기 버튼이 생기고, 누르면 그 사람의 az 권한으로 swap 이 나갑니다. 공유 보드에는 버튼이 없습니다.</p>
+        <p class="small mute">AI 는 쓰지 않습니다. 실행한 사람의 <code>git</code>·<code>gh</code>·<code>az</code> 로그인으로 아래를 읽기만 합니다(쓰기·배포·swap 실행 없음). 예외는 하나 — 실행한 사람이 자기 PC 에서 <code>--allow-swap</code> 으로 띄운 화면에만 swap·되돌리기 버튼이 생기고, 누르면 그 사람의 az 권한으로 swap 이 나갑니다. 공유 보드에서는 헤더의 「Microsoft 로그인」으로 로그인한 사람에게만, 그 사람 계정에 swap 권한이 있는 앱에만 버튼이 생깁니다. 이때 swap 은 브라우저가 Azure 에 직접 보내고(토큰은 그 브라우저 탭에만 있고 보드 서버로 가지 않음), 결과는 수집 PC 가 2분 안에 감지해 다음 수집에 반영합니다.</p>
         <ol>
           <li><b>git(로컬 클론)</b> — 레포마다 <code>projects/&lt;repo&gt;</code> 클론에서 <code>fetch --prune</code> 뒤 원격 브랜치 전체 목록(이름·끝 커밋·작성자·날짜)과 세 브랜치(develop·스테이징·운영 추정 SHA) 사이 커밋 차이를 봅니다. 차이는 <code>--cherry-pick</code> 비교라 cherry-pick 으로 이미 넘어간 같은 패치는 제외하고, 머지 커밋도 제외합니다. 클론이 없으면 받아 옵니다.</li>
           <li><b>GitHub PR</b> — <code>gh pr list</code> 로 상태 무관 최근 300건(번호·제목·base·머지 커밋·Draft·갱신 시각).</li>
@@ -220,7 +221,9 @@
 </dialog>
 <div id="toast" role="status"></div>
 <script src="pixel.js"></script>
+<script src="weblogin.js"></script>
 <script>
+if (window.AUTH_FRAME) throw new Error("로그인 응답을 넘기는 숨은 창 — 보드를 띄우지 않음");
 const STAGES = ["branch","pr","develop","staging","prod"];
 const LABEL = {branch:"브랜치", pr:"PR", develop:"develop", staging:"스테이징", prod:"운영"};
 const DESC = {branch:"브랜치만 있음(PR 없음)", pr:"PR 열림", develop:"develop 머지", staging:"스테이징 브랜치 머지 (swap 대기 또는 스테이징 배포)", prod:"운영 반영 (swap 또는 운영 브랜치 배포)"};
@@ -230,13 +233,15 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;
 const fmt = s => { if (!s) return "-"; const d = new Date(s); return d.toLocaleString("ko-KR", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hour12:false}); };
 const ago = s => { if (!s) return ""; const m = (Date.now() - new Date(s)) / 60000; if (m < 60) return Math.max(1, Math.round(m)) + "분 전"; if (m < 1440) return Math.round(m/60) + "시간 전"; return Math.round(m/1440) + "일 전"; };
 const short = s => s ? s.slice(0, 8) : "-";
-const jira = k => STATE?.jira_base ? `<a href="${STATE.jira_base}${k}" target="_blank">${k}</a>` : k;
+const href = u => /^https:\/\//i.test(u || "") ? esc(u) : "#";   // 링크는 https 만, 따옴표·꺾쇠는 이스케이프(같은 출처에 로그인 토큰이 있음)
+const jira = k => STATE?.jira_base ? `<a href="${href(STATE.jira_base + k)}" target="_blank">${esc(k)}</a>` : esc(k);
 
 async function load() {
   const r = await fetch("/api/state", {cache:"no-store"});
   STATE = await r.json();
   render();
   trackStatus(STATE.status);
+  WEBLOGIN.init(STATE);
 }
 function trackStatus(st) {
   LAST_ST = st;
@@ -248,7 +253,7 @@ function trackStatus(st) {
   $("#collected").textContent = (c ? `수집 ${fmt(c)} (${ago(c)}, ${STATE.duration_s ?? "?"}초)` : "아직 수집 전") + (st?.last_error ? " · 마지막 수집 오류" : "");
   const tags = [];
   if (ro) {
-    tags.push(`<span class="tag" title="이 서버는 수집하지 않고, 수집 PC 가 올려 준 결과만 보여 줍니다. swap 버튼도 없습니다.">공유 보기 전용</span>`);
+    tags.push(`<span class="tag" title="이 서버는 수집하지 않고, 수집 PC 가 올려 준 결과만 보여 줍니다. swap 은 Microsoft 로그인한 사람의 Azure 권한으로만 됩니다.">공유 보기 전용</span>`);
     if (c && Date.now() - new Date(c) > 30 * 60000) tags.push(`<span class="tag warn" title="마지막 수집이 30분 넘게 지났습니다. 수집 PC 가 꺼졌거나 올리기에 실패했을 수 있습니다.">수집 PC 꺼짐?</span>`);
   }
   if (st?.mode === "swap") tags.push(`<span class="tag danger" title="--allow-swap 으로 띄운 이 PC 전용 화면입니다. swap 은 내 az 로그인 권한으로 실행됩니다.">swap 켜짐${st.swap?.fake ? " (가짜 명령)" : ""}</span>`);
@@ -272,9 +277,15 @@ function trackStatus(st) {
       + (ch ? ` · 최근 변화 ${ch[0]} ${fmt(ch[1].at)} (${{refs:"커밋", pr:"PR", swap:"swap"}[ch[1].why] || ch[1].why})` : "") + (w.probe_error ? " · 감시 오류" : "");
   } else $("#watch").textContent = "자동 감시 꺼짐";
 }
-// ---------- swap(내 PC 용 --allow-swap 서버에서만. 서버가 status.swap.enabled 를 줄 때만 버튼을 그린다) ----------
+// ---------- swap 버튼: 두 길 ----------
+// ① 서버 swap(내 PC 용 --allow-swap, 서버의 az 로 실행) — 서버가 status.swap.enabled 를 준다.
+// ② 웹 로그인 swap(weblogin.js) — Microsoft 로그인한 사람의 권한으로 브라우저가 Azure 를 직접 부른다. ① 이 켜진 서버에서는 꺼진다.
 const TOKEN = document.querySelector('meta[name="board-token"]')?.content || "";
 let LAST_ST = null, LAST_DONE = null, SWAP_POLL = null;
+if (typeof WEBLOGIN === "undefined") window.WEBLOGIN = {sw: {}, init() {}, checkPerms: async () => false, start: async () => [false, "웹 로그인 파일을 못 읽음"], armUrl: () => ""};
+const swapState = st => st?.swap?.enabled ? st.swap : (WEBLOGIN.sw?.enabled ? WEBLOGIN.sw : null);
+WEBLOGIN.onChange = () => { updateSwapCtl(LAST_ST); showAccounts(LAST_ST); };
+WEBLOGIN.toast = (m, bad) => toast(m, bad);
 function toast(msg, bad) {
   const t = $("#toast"); t.textContent = msg; t.classList.toggle("bad", !!bad); t.classList.add("show");
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), bad ? 9000 : 5000);
@@ -287,6 +298,9 @@ function swapBlock(r, sw, act) {
   if (!perm.ok) return "swap 권한 없음 — " + perm.reason;
   if (sw.job) return `다른 swap 진행 중(${sw.job.repo})`;
   if (act === "undo") return undoOpen(sw, r.name) ? "" : "되돌릴 swap 없음";
+  const pend = sw.web && sw.pending?.[r.name];
+  if (pend && !(r.swaps?.[0]?.time && new Date(r.swaps[0].time) >= new Date(pend.started_at) - 60000))
+    return `방금 ${pend.action === "undo" ? "되돌리기" : "swap"} 함(${fmt(pend.finished_at)}) — 보드에 반영된 뒤 swap(수집 PC 가 2분 안에 감지)`;
   // swap 은 맞바꾸기라 swap 직후 다시 수집이 끝나기 전에 또 누르면 되돌리기가 된다
   if (LAST_ST?.running && (!LAST_ST.running_repos || LAST_ST.running_repos.includes(r.name))) return "이 레포를 다시 수집하는 중 — 끝난 뒤 swap";
   const run = r.runs?.[0];
@@ -296,7 +310,7 @@ function swapBlock(r, sw, act) {
   return "";
 }
 function updateSwapCtl(st) {
-  const sw = st?.swap;
+  const sw = swapState(st);
   document.querySelectorAll(".swapctl").forEach(el => {
     const r = STATE?.repos?.find(x => x.name === el.dataset.repo);
     if (!r || !sw?.enabled) { el.innerHTML = ""; return; }
@@ -305,7 +319,7 @@ function updateSwapCtl(st) {
     let html = `<span title="${esc(why || "staging → production swap (확인 창이 먼저 뜹니다)")}"><button data-act="swap" ${why ? "disabled" : ""}>swap</button></span>`;
     if (undoOpen(sw, r.name)) {
       const u = sw.undo[r.name], uw = swapBlock(r, sw, "undo");
-      html += `<span title="${esc(uw || `이 보드에서 ${fmt(u.at)} 에 한 swap 을 되돌림(${fmt(u.until)} 까지)`)}"><button class="undo" data-act="undo" ${uw ? "disabled" : ""}>되돌리기</button></span>`;
+      html += `<span title="${esc(uw || `이 ${sw.web ? "브라우저" : "보드"}에서 ${fmt(u.at)} 에 한 swap 을 되돌림(${fmt(u.until)} 까지)`)}"><button class="undo" data-act="undo" ${uw ? "disabled" : ""}>되돌리기</button></span>`;
     }
     el.innerHTML = html;
     el.querySelectorAll("button").forEach(b => b.onclick = () => openSwap(r.name, b.dataset.act));
@@ -315,21 +329,30 @@ function openSwap(repo, act) {
   const r = STATE.repos.find(x => x.name === repo); if (!r) return;
   const undo = act === "undo", so = r.staging_only?.commits || [], run = r.runs?.[0];
   const keys = [...new Set(so.flatMap(c => c.keys || []))];
-  const cmd = `az webapp deployment slot swap -g ${LAST_ST?.swap?.resource_group || "?"} -n ${r.app} --slot staging --target-slot production`;
+  const sw = swapState(LAST_ST), web = !!sw?.web;
+  const cmd = web ? `POST ${WEBLOGIN.armUrl(r.app)}  {"targetSlot":"production","preserveVnet":true}`
+                  : `az webapp deployment slot swap -g ${sw?.resource_group || "?"} -n ${r.app} --slot staging --target-slot production`;
   $("#swapBody").innerHTML = `<h3>${undo ? "되돌리기 — 방금 한 swap 을 다시 맞바꿈" : "swap — 스테이징을 운영으로"}</h3>
-    <div class="row">앱 <b>${esc(r.app)}</b> · staging ⇄ production${LAST_ST?.swap?.fake ? ` <span class="tag warn">가짜 명령으로 실행(시험)</span>` : ""}</div>
+    <div class="row">앱 <b>${esc(r.app)}</b> · staging ⇄ production${sw?.fake ? ` <span class="tag warn">가짜 명령으로 실행(시험)</span>` : ""}</div>
     <div class="row small">지금 운영(추정) <code>${short(r.prod?.sha)}</code> · 스테이징 <code>${short(r.staging?.sha)}</code> ${esc(r.staging?.message || "")}</div>
-    <div class="row small">마지막 스테이징 배포 run: ${run ? `${esc(run.conclusion || run.status)} ${fmt(run.updatedAt)} <a href="${run.url}" target="_blank">${esc(run.displayTitle)}</a>` : "없음"}</div>
+    <div class="row small">마지막 스테이징 배포 run: ${run ? `${esc(run.conclusion || run.status)} ${fmt(run.updatedAt)} <a href="${href(run.url)}" target="_blank">${esc(run.displayTitle)}</a>` : "없음"}</div>
     ${undo ? `<div class="row">운영과 스테이징 슬롯을 다시 맞바꿉니다. 방금 나간 커밋이 운영에서 빠지고 이전 운영이 돌아옵니다.</div>`
            : `<div class="row">운영에 나갈 커밋 ${so.length}개 · 이슈 ${keys.length ? keys.map(jira).join(", ") : "없음"}</div>
               <ul>${so.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span></li>`).join("")}</ul>`}
-    <div class="row small mute">실행 명령(내 az 로그인으로 실행, Azure 활동 기록에 내 이름으로 남음)</div><code class="cmd">${esc(cmd)}</code>`;
+    <div class="row small mute">${web ? `실행 요청(${esc(WEBLOGIN.account?.username || "")} 의 Microsoft 로그인 권한으로 이 브라우저가 보냄, Azure 활동 기록에 그 이름으로 남음)`
+                                       : "실행 명령(내 az 로그인으로 실행, Azure 활동 기록에 내 이름으로 남음)"}</div><code class="cmd">${esc(cmd)}</code>`;
   $("#swapApp").textContent = r.app;
   const inp = $("#swapConfirm"), ok = $("#swapOk");
   inp.value = ""; ok.disabled = true; ok.textContent = undo ? "되돌리기 실행" : "swap 실행";
   inp.oninput = () => { ok.disabled = inp.value.trim() !== r.app; };
   ok.onclick = async () => {
     ok.disabled = true;
+    if (web) {
+      const [started, why] = await WEBLOGIN.start(repo, undo ? "undo" : "swap");
+      if (!started) { toast(`시작 못 함 — ${why}`, true); ok.disabled = false; return; }
+      $("#swapDlg").close();
+      return;
+    }
     try {
       const res = await fetch("/api/swap", {method:"POST", headers:{"Content-Type":"application/json", "X-Board-Token":TOKEN},
         body: JSON.stringify({repo, action: undo ? "undo" : "swap", info: {prod: r.prod?.sha, staging: r.staging?.sha, commits: so.length, keys}})});
@@ -354,12 +377,34 @@ function showAccounts(st) {
     el.innerHTML = `${one("az", a.az, "az login")}${a.az?.ok && a.az.sub ? ` <span title="az 구독">(${esc(a.az.sub)})</span>` : ""} · ${one("gh", a.gh, "gh auth login")}`;
     el.title = `로그인 확인 ${fmt(a.checked_at)}`;
   }
-  const rb = $("#recheck"), checking = !!st?.swap?.checking;
-  rb.hidden = !st?.swap?.enabled;
+  showWebLogin();
+  const sw = swapState(st), rb = $("#recheck"), checking = !!sw?.checking;
+  rb.hidden = !sw?.enabled;
   rb.disabled = checking;
+  rb.title = sw?.web ? "내 Microsoft 계정의 앱별 swap 권한을 지금 다시 조회합니다(로그인할 때 한 번 조회)"
+                     : "az·gh 로그인과 앱별 swap 권한을 지금 다시 조회합니다(평소엔 1시간마다)";
   rb.innerHTML = checking ? `<span class="spin"></span> 확인 중…` : "권한 다시 확인";
 }
+// 웹 로그인(공유 보드·기본 실행에서 entra 설정이 있을 때): 로그인 전엔 버튼, 로그인 뒤엔 이름과 로그아웃
+function showWebLogin() {
+  const W = WEBLOGIN, el = $("#weblogin");
+  el.hidden = !W.available;
+  if (!W.available) return;
+  if (W.error) el.innerHTML = `<span class="bad" style="color:#991b1b" title="${esc(W.error)}">Microsoft 로그인 불가</span>`;
+  else if (!W.ready) el.innerHTML = `<span class="mute">로그인 확인 중…</span>`;
+  else if (!W.account) el.innerHTML = `<button id="wlLogin" title="Microsoft 계정으로 로그인하면 내 Azure 권한으로 swap 버튼을 쓸 수 있습니다. 토큰은 이 브라우저 탭에만 있고 보드 서버로 가지 않습니다.">Microsoft 로그인</button>`;
+  else el.innerHTML = `<span title="${esc(W.account.username)} — swap 은 이 계정의 Azure 권한으로 실행됩니다">${esc(W.account.name || W.account.username)}</span> <button id="wlLogout" title="이 브라우저의 로그인 토큰만 지웁니다">로그아웃</button>`;
+}
+$("#weblogin").addEventListener("click", e => {
+  if (e.target.id === "wlLogin") WEBLOGIN.login();
+  if (e.target.id === "wlLogout") WEBLOGIN.logout();
+});
 $("#recheck").onclick = async () => {
+  if (!LAST_ST?.swap?.enabled && WEBLOGIN.sw.enabled) {
+    const t0 = WEBLOGIN.sw.perms_checked_at;
+    if (await WEBLOGIN.checkPerms()) toast(WEBLOGIN.sw.perms_checked_at !== t0 ? "swap 권한을 다시 확인했습니다" : "권한 조회에 실패했습니다 — 버튼에 마우스를 올려 이유 확인", WEBLOGIN.sw.perms_checked_at === t0);
+    return;
+  }
   try {
     const res = await fetch("/api/recheck", {method:"POST", headers:{"X-Board-Token":TOKEN}});
     const j = await res.json();
@@ -495,10 +540,10 @@ function renderRepo(r) {
   const swap = r.swaps?.[0];
   const devOnlyText = `${dv.length}개 커밋이 develop 에만`;
   const stOnlyText = r.staging_only ? `${so.length}개 커밋이 스테이징에만(운영 미반영)` : "운영 SHA 미확인";
-  const commitList = (list) => list.length ? `<ul>${list.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span> <a href="${c.url}" target="_blank">↗</a></li>`).join("")}</ul>` : "<div class='mute'>없음</div>";
+  const commitList = (list) => list.length ? `<ul>${list.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span> <a href="${href(c.url)}" target="_blank">↗</a></li>`).join("")}</ul>` : "<div class='mute'>없음</div>";
   const folded = isCollapsed(r.name);
   return `<section class="repo${folded ? " collapsed" : ""}" data-repo="${esc(r.name)}">
-    <div class="head"><span class="handle" title="끌어서 순서 변경" draggable="true">⠿</span><button class="fold" title="${folded ? "펴기" : "접기"}">${folded ? "▸" : "▾"}</button><h2>${esc(r.label)}</h2><a class="small" href="${r.web}" target="_blank">${esc(r.name)}</a>
+    <div class="head"><span class="handle" title="끌어서 순서 변경" draggable="true">⠿</span><button class="fold" title="${folded ? "펴기" : "접기"}">${folded ? "▸" : "▾"}</button><h2>${esc(r.label)}</h2><a class="small" href="${href(r.web)}" target="_blank">${esc(r.name)}</a>
       ${folded ? `<span class="summary"></span>` : ""}
       <span class="small mute">${r.app ? `Azure ${esc(r.app)}` : "Azure 앱 미설정"}</span>
       ${r.app ? `<span class="swapctl" data-repo="${esc(r.name)}"></span><button class="noticebtn" data-notice="${esc(r.name)}" title="Slack 에 붙여 넣을 배포 예고·결과 문구(복사용)">알림 문구</button>` : ""}
@@ -519,7 +564,7 @@ function renderRepo(r) {
       <h4>운영 SHA 근거</h4><div>${esc(r.prod?.basis||"")}</div>
       <h4>스테이징에만(운영 미반영)</h4>${commitList(so)}
       <h4>develop 에만(${esc(r.staging_branch||"deploy/prod")} 미반영, cherry-pick 동일 패치 제외)</h4>${commitList(dv)}
-      <h4>최근 배포 run (${esc(r.prod_branch||r.staging_branch||"deploy/prod")})</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${x.url}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
+      <h4>최근 배포 run (${esc(r.prod_branch||r.staging_branch||"deploy/prod")})</h4><ul>${(r.runs||[]).slice(0,5).map(x => `<li><code>${short(x.headSha)}</code> ${esc(x.conclusion)} ${fmt(x.updatedAt)} <a href="${href(x.url)}" target="_blank">${esc(x.displayTitle)}</a></li>`).join("")}</ul>
       ${r.mode === "branch" ? "" : `<h4>swap 기록</h4><ul>${(r.swaps||[]).slice(0,5).map(s => `<li>${fmt(s.time)} ${esc(s.who||"")}</li>`).join("") || "<li class='mute'>없음</li>"}</ul>`}
     </details>`}
   </section>`;
@@ -573,10 +618,10 @@ function openIssue(repo, key) {
     <div class="title">${esc(i.title||"")}</div>
     <div class="track stage-${i.stage}">${STAGES.map(s => `<span class="${on.has(s) ? "on" : ""}">${LABEL[s]}</span>`).join("")}</div>
     ${i.flags?.length ? `<div class="flags" style="color:#b45309">${esc(i.flags.join(" · "))}</div>` : ""}
-    <h4>브랜치 ${i.branches.length}</h4><ul>${i.branches.map(b => `<li><a href="${b.url}" target="_blank"><code>${esc(b.name)}</code></a> ${esc(b.author)} ${fmt(b.date)}<br><span class="mute">${esc(b.message)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
-    <h4>PR ${i.prs.length}</h4><ul>${i.prs.map(p => `<li><a href="${p.url}" target="_blank">#${p.number}</a> → <code>${esc(p.baseRefName)}</code> ${esc(p.state)}${p.isDraft ? "(Draft)" : ""} ${p.mergedAt ? "머지 " + fmt(p.mergedAt) : fmt(p.updatedAt)} ${esc(p.author||"")}<br><span class="mute">${esc(p.title)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
-    <h4>스테이징에만 있는 커밋 ${i.staging_only.length}</h4><ul>${i.staging_only.map(c => `<li><a href="${c.url}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
-    <h4>develop 에만 있는 커밋 ${i.develop_only.length}</h4><ul>${i.develop_only.map(c => `<li><a href="${c.url}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>`;
+    <h4>브랜치 ${i.branches.length}</h4><ul>${i.branches.map(b => `<li><a href="${href(b.url)}" target="_blank"><code>${esc(b.name)}</code></a> ${esc(b.author)} ${fmt(b.date)}<br><span class="mute">${esc(b.message)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>PR ${i.prs.length}</h4><ul>${i.prs.map(p => `<li><a href="${href(p.url)}" target="_blank">#${p.number}</a> → <code>${esc(p.baseRefName)}</code> ${esc(p.state)}${p.isDraft ? "(Draft)" : ""} ${p.mergedAt ? "머지 " + fmt(p.mergedAt) : fmt(p.updatedAt)} ${esc(p.author||"")}<br><span class="mute">${esc(p.title)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>스테이징에만 있는 커밋 ${i.staging_only.length}</h4><ul>${i.staging_only.map(c => `<li><a href="${href(c.url)}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>
+    <h4>develop 에만 있는 커밋 ${i.develop_only.length}</h4><ul>${i.develop_only.map(c => `<li><a href="${href(c.url)}" target="_blank"><code>${short(c.sha)}</code></a> ${esc(c.message)} <span class="mute">${fmt(c.date)}</span></li>`).join("") || "<li class='mute'>없음</li>"}</ul>`;
   $("#panel").classList.add("open");
 }
 load();

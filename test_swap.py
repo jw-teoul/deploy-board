@@ -31,6 +31,18 @@ class SwapAllowed(unittest.TestCase):
         self.assertFalse(swap.swap_allowed([])[0])
         self.assertFalse(swap.swap_allowed(None)[0])
 
+    def test_shared_cases(self):  # 웹 로그인(weblogin.js, test_weblogin.js)과 같은 사례로 같은 답
+        import json
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "perm_cases.json"), encoding="utf-8") as f:
+            cases = json.load(f)
+        for c in cases["allowed"]:
+            ok, why = swap.swap_allowed(c["perms"])
+            self.assertEqual(ok, c["ok"], c["name"])
+            if c.get("why"):
+                self.assertIn(c["why"], why, c["name"])
+        for pattern, ok in cases["match"]:
+            self.assertEqual(swap.action_match(pattern, A), ok, pattern)
+
     def test_case_and_wildcards(self):
         self.assertTrue(swap.action_match("microsoft.web/SITES/*", A))
         self.assertTrue(swap.action_match("*", A))

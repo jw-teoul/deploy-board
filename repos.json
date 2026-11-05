@@ -4,6 +4,7 @@
   "jira_base": "https://edb.atlassian.net/browse/",
   "issue_key_pattern": "\\b(?:PILLDOC|PHAI|MOBILE|PA2|PI)-\\d+\\b",
   "swap_lookback_days": 90,
+  "entra": {"tenant_id": "e00a0fe1-b607-4632-99c6-773516af48c5", "client_id": "e5230bcd-e2ae-401e-b4b7-4b3afe854b56"},
   "repos": [
     {"name": "adminsite",   "app": "AdminSiteLinux-Prod", "workflow": "deploy.yml", "label": "AdminSite"},
     {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site"},

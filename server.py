@@ -14,10 +14,12 @@
 `POST /api/refresh {"repos":["adminsite"]}` 를 호출하면 된다.
 """
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -76,7 +78,31 @@ def render_index():
                         f'<script src="pixel.js?v={js}" data-assets="{assets}"></script>', 1)
     if OPT["token"]:  # swap 요청 위조 방어용 토큰 — 이 서버가 내보낸 화면만 안다
         html = html.replace("</head>", f'<meta name="board-token" content="{OPT["token"]}">\n</head>', 1)
+    wl = file_version(os.path.join(WEB, "weblogin.js"))
+    html = html.replace('<script src="weblogin.js"></script>', f'<script src="weblogin.js?v={wl}"></script>', 1)
     return html
+
+
+def csp(html):
+    """화면의 Content-Security-Policy. 웹 로그인 토큰이 이 화면에 있으므로 스크립트는 이 서버 파일과 화면 안 인라인(해시 일치)만,
+    접속은 이 서버·Microsoft 로그인·Azure Resource Manager 만 허용한다."""
+    hashes = " ".join("'sha256-%s'" % base64.b64encode(hashlib.sha256(js.encode("utf-8")).digest()).decode()
+                      for js in re.findall(r"<script>(.*?)</script>", html, re.S))
+    return ("default-src 'self'; "
+            f"script-src 'self' {hashes}; "
+            "connect-src 'self' https://login.microsoftonline.com https://management.azure.com; "
+            "frame-src https://login.microsoftonline.com; "
+            "img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'self'")   # 'self': 로그인 갱신(숨은 iframe)이 로그인 응답을 이 화면 주소로 iframe 안에 연다
+
+
+def web_login(cfg):
+    """웹 로그인 swap 설정(공개값). swap 모드(서버 az 로 swap)에서는 서버 쪽 swap 을 쓰므로 주지 않는다."""
+    e = cfg.get("entra") or {}
+    if status["mode"] == "swap" or not e.get("tenant_id") or not e.get("client_id"):
+        return None
+    return {"tenant_id": e["tenant_id"], "client_id": e["client_id"],
+            "msal": "vendor/msal-browser.min.js?v=" + file_version(os.path.join(WEB, "vendor", "msal-browser.min.js"))}
 
 
 def now():
@@ -268,13 +294,32 @@ class Handler(SimpleHTTPRequestHandler):
             versioned = "v=" in (self.path.split("?", 1)[1] if "?" in self.path else "")
             self.send_header("Cache-Control", "public, max-age=31536000, immutable" if versioned else "no-cache")
         self._cache_set = False   # keep-alive 로 같은 핸들러가 다음 요청을 받을 때를 위해 되돌린다
+        # 화면(_index) 말고 모든 응답에도 가장 좁은 CSP 를 붙인다 — index.html 을 다른 경로로 열거나 다른 html 이 생겨도 스크립트가 돌지 않게
+        if not getattr(self, "_csp_set", False):
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header("Referrer-Policy", "no-referrer")
+        self._csp_set = False
         super().end_headers()
 
+    def list_directory(self, path):   # 폴더 목록(html)은 내주지 않는다
+        self.send_error(404)
+        return None
+
+    def _is_index(self, path):
+        """/, /index.html 과 같은 파일로 풀리는 모든 경로(/./index.html, /Index.html(Windows), %2e 등)를 화면으로 본다."""
+        t = os.path.normcase(os.path.realpath(self.translate_path(path)))
+        web = os.path.normcase(os.path.realpath(WEB))
+        return t in (web, os.path.join(web, "index.html"))
+
     def _index(self):
-        body = render_index().encode("utf-8")
+        html = render_index()
+        body = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Security-Policy", csp(html))
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
+        self._csp_set = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -297,6 +342,7 @@ class Handler(SimpleHTTPRequestHandler):
             with open(STATE, encoding="utf-8") as f:
                 data = json.load(f)
             data["status"] = status
+            data["entra"] = web_login(collector.load_cfg())
             return self._json(data)
         if path == "/api/status":
             if OPT["readonly"]:
@@ -306,9 +352,14 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
             out = notice_for((q.get("repo") or [""])[0])
             return self._json(out, 404 if "error" in out else 200)
-        if path in ("/", "/index.html"):
+        if self._is_index(path):
             return self._index()
         return super().do_GET()
+
+    def do_HEAD(self):
+        if self._is_index(self.path.split("?", 1)[0]):
+            return self._index()
+        return super().do_HEAD()
 
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)

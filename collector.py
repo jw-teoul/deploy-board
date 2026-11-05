@@ -379,6 +379,8 @@ class Collector:
             state["repos"].append(self.collect_repo(rc))
         state["errors"] = self.errors
         state["duration_s"] = round(time.time() - t0, 1)
+        if self._sub:   # 웹 로그인 swap 화면이 ARM 주소를 만들 때 쓴다(구독 ID·리소스 그룹은 비밀이 아님)
+            state["azure"] = {"subscription_id": self._sub, "resource_group": self.cfg.get("resource_group")}
         return state
 
 
@@ -401,6 +403,8 @@ def merge_state(new, out):
     merged["repos"].sort(key=lambda r: order.get(r["name"], 99))
     merged["collected_at"] = new["collected_at"]
     merged["duration_s"] = new["duration_s"]
+    if new.get("azure"):
+        merged["azure"] = new["azure"]
     merged["errors"] = [e for e in old.get("errors", []) if not any(e.startswith(n + ":") for n in names)] + new.get("errors", [])
     return merged
 
