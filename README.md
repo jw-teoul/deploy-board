@@ -58,6 +58,7 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
 - 켜는 법: 이 PC 의 환경 변수 두 개를 넣고 보드를 다시 띄운다. 헤더에 「Slack 켜짐 · C…」가 보인다(없거나 모양이 틀리면 「Slack 꺼짐」, 툴팁에 이유).
   - `DEPLOY_BOARD_SLACK_TOKEN` — 봇 토큰 `xoxb-…`. Slack 앱의 Bot Token Scopes 에 `chat:write` 만 주면 된다. 받는 채널에 봇을 초대해 둔다(`/invite @봇이름`).
   - `DEPLOY_BOARD_SLACK_CHANNEL` — 채널 ID `C…`(채널 이름 아님. 채널 정보 맨 아래에 있음).
+  - 레포 폴더의 `.env`(git 에 안 올라감)에 `KEY=값` 으로 적어도 된다. 시작할 때 `DEPLOY_BOARD_` 로 시작하는 키만 읽고, 같은 이름의 환경 변수가 있으면 그쪽이 먼저다. 읽은 키 이름(값 아님)을 콘솔에 찍는다. `DEPLOY_BOARD_SLACK_APP_TOKEN`(xapp-)은 지금 쓰지 않는다.
   - PowerShell 예: `[Environment]::SetEnvironmentVariable("DEPLOY_BOARD_SLACK_TOKEN", "xoxb-…", "User")` 뒤 새 터미널에서 실행.
 - 토큰은 repos.json·git·notes·공유 서버에 두지 않는다. 화면·`/api/status`·swap-log·state.json 에도 나가지 않는다(채널 ID 만 보임). 공유 서버(`--readonly`)와 웹 로그인 swap 에서는 보내지 않는다.
 - 흐름: swap 확인 창에 「Slack 에 알리기」 체크(기본 꺼짐)와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면

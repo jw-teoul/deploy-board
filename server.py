@@ -603,8 +603,11 @@ def main():
         global SWAP_LOG
         if os.environ.get("DEPLOY_BOARD_SWAP_CMD"):   # 가짜 명령 시험 기록은 실제 swap 기록과 섞지 않는다(알림 결과 문구가 읽음)
             SWAP_LOG = SWAP_LOG.replace(".jsonl", ".fake.jsonl")
+        loaded = slack.load_env_file(os.path.join(HERE, ".env"))   # 환경 변수가 먼저, 없는 것만 .env 에서
+        if loaded:
+            print(f".env 에서 읽음: {', '.join(loaded)}", file=sys.stderr)
         OPT["slack"], why = slack.config()
-        for k in ("DEPLOY_BOARD_SLACK_TOKEN", "DEPLOY_BOARD_SLACK_CHANNEL", "DEPLOY_BOARD_SLACK_API"):
+        for k in ("DEPLOY_BOARD_SLACK_TOKEN", "DEPLOY_BOARD_SLACK_CHANNEL", "DEPLOY_BOARD_SLACK_API", "DEPLOY_BOARD_SLACK_APP_TOKEN"):
             os.environ.pop(k, None)   # az·gh·git 같은 자식 프로세스가 봇 토큰을 물려받지 않게
         status["slack"] = slack.public(OPT["slack"], why)
         OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap, notify=slack_result)

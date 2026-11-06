@@ -15,6 +15,29 @@ MAX_TEXT = 4000
 CHANNEL_RX = re.compile(r"^[CG][A-Z0-9]{6,}$")
 
 
+def load_env_file(path, env=None):
+    """KEY=VALUE 파일(.env)에서 DEPLOY_BOARD_ 로 시작하는 키만 읽어 env 에 넣는다. 이미 있는 값은 덮지 않는다.
+    → 넣은 키 목록(값은 돌려주지 않는다). 파일이 없으면 [] ."""
+    env = os.environ if env is None else env
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    keys = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = (s.strip() for s in line.split("=", 1))
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if k.startswith("DEPLOY_BOARD_") and v and k not in env:
+            env[k] = v
+            keys.append(k)
+    return keys
+
+
 def config(env=None):
     """→ {"token","channel","api"} 또는 None(꺼짐)과 이유."""
     env = os.environ if env is None else env

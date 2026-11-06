@@ -78,6 +78,28 @@ class Config(unittest.TestCase):
         self.assertIsNotNone(slack.config(dict(base, DEPLOY_BOARD_SLACK_API="http://127.0.0.1:8798/api"))[0])
 
 
+class EnvFile(unittest.TestCase):
+    def test_reads_board_keys_without_overriding(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, ".env")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("# 주석\n\nDEPLOY_BOARD_SLACK_TOKEN=" + TOKEN + "\n"
+                        'DEPLOY_BOARD_SLACK_CHANNEL="C0FROMFILE"\n'
+                        "DEPLOY_BOARD_SLACK_APP_TOKEN = xapp-1-abc \n"
+                        "PATH=/evil\nDEPLOY_BOARD_SLACK_API=\n")
+            env = {"DEPLOY_BOARD_SLACK_CHANNEL": "C0ALREADY", "PATH": "/usr/bin"}
+            keys = slack.load_env_file(p, env)
+        self.assertEqual(env["DEPLOY_BOARD_SLACK_TOKEN"], TOKEN)
+        self.assertEqual(env["DEPLOY_BOARD_SLACK_CHANNEL"], "C0ALREADY")   # 이미 있는 값은 그대로
+        self.assertEqual(env["DEPLOY_BOARD_SLACK_APP_TOKEN"], "xapp-1-abc")
+        self.assertEqual(env["PATH"], "/usr/bin")   # 보드 키가 아니면 읽지 않는다
+        self.assertNotIn("DEPLOY_BOARD_SLACK_API", env)   # 빈 값은 넣지 않는다
+        self.assertEqual(sorted(keys), ["DEPLOY_BOARD_SLACK_APP_TOKEN", "DEPLOY_BOARD_SLACK_TOKEN"])
+
+    def test_missing_file_is_fine(self):
+        self.assertEqual(slack.load_env_file(os.path.join(tempfile.gettempdir(), "없는-파일.env"), {}), [])
+
+
 class Post(unittest.TestCase):
     def setUp(self):
         self.fake = FakeSlack()
