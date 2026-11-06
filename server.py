@@ -542,7 +542,7 @@ class Handler(SimpleHTTPRequestHandler):
             if body.get("action") == "undo":   # 되돌리기 결과 문구의 이름(레포 label)
                 r = repo_state(body.get("repo"))
                 if r:
-                    info["snapshot"] = {"label": r.get("label") or r.get("name")}
+                    info["snapshot"] = {"label": r.get("label") or r.get("name"), "url": r.get("url")}
             err = slack_preview(body.get("repo"), body.get("action"), info, body.get("slack"))
             if err:
                 return self._json({"started": False, "reason": err, "status": status}, 409)
@@ -606,7 +606,7 @@ def main():
         loaded = slack.load_env_file(os.path.join(HERE, ".env"))   # 환경 변수가 먼저, 없는 것만 .env 에서
         if loaded:
             print(f".env 에서 읽음: {', '.join(loaded)}", file=sys.stderr)
-        OPT["slack"], why = slack.config()
+        OPT["slack"], why = slack.config(links=collector.load_cfg())   # repos.json 의 jira_base·키 규칙 → 보낼 때 Jira 링크
         for k in ("DEPLOY_BOARD_SLACK_TOKEN", "DEPLOY_BOARD_SLACK_CHANNEL", "DEPLOY_BOARD_SLACK_API", "DEPLOY_BOARD_SLACK_APP_TOKEN"):
             os.environ.pop(k, None)   # az·gh·git 같은 자식 프로세스가 봇 토큰을 물려받지 않게
         status["slack"] = slack.public(OPT["slack"], why)

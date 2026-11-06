@@ -111,7 +111,7 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 웹훅(GitHub push/PR, Azure Event Grid 의 swap 이벤트)을 쓰면 폴링 없이 즉시 반영되지만, GitHub·Azure 가 호출할 수 있는 **외부 접근 주소가 필요해 지금은 안 된다**(로컬 PC·사내 개발 서버 모두 밖에서 못 들어온다). 나중에 중계(터널·공개 엔드포인트)가 생기면 그 훅이 `POST /api/refresh` 에 `{"repos":["<레포>"]}` 를 보내면 된다 — 엔드포인트는 이미 있다.
 
 ## 설정 `repos.json`
-`repos[]` 한 항목이 레포 하나. 공통: `name`(GitHub 레포)·`workflow`(배포 워크플로 파일)·`label`·선택 `local`(클론 경로, 기본 `../projects/<name>` — 없으면 `gh repo clone` 으로 받고, 단일 브랜치 클론이면 fetch refspec 을 전체 브랜치로 넓힌다). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지).
+`repos[]` 한 항목이 레포 하나. 공통: `name`(GitHub 레포)·`workflow`(배포 워크플로 파일)·`label`·선택 `local`(클론 경로, 기본 `../projects/<name>` — 없으면 `gh repo clone` 으로 받고, 단일 브랜치 클론이면 fetch refspec 을 전체 브랜치로 넓힌다). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지). 선택 `url`(운영 사이트 주소)은 Slack 예고 꼬리말과 결과 글의 「확인:」 줄에 들어간다. Slack 봇이 보낼 때는 `issue_key_pattern` 에 맞는 키를 `jira_base` + 키 링크로 바꾼다(복사용 문구는 글자 그대로).
 
 배포 방식에 따라 두 모드 중 하나:
 | 모드 | 키 | 스테이징 | 운영 | 예 |

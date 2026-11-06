@@ -6,10 +6,10 @@
   "swap_lookback_days": 90,
   "entra": {"tenant_id": "e00a0fe1-b607-4632-99c6-773516af48c5", "client_id": "e5230bcd-e2ae-401e-b4b7-4b3afe854b56"},
   "repos": [
-    {"name": "adminsite",   "app": "AdminSiteLinux-Prod", "workflow": "deploy.yml", "label": "AdminSite"},
-    {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site"},
-    {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2"},
-    {"name": "adpssite",    "app": "AdpsSiteLinux-Prod",  "workflow": "ci.yml",     "label": "ADPS Site"},
+    {"name": "adminsite",   "app": "AdminSiteLinux-Prod", "workflow": "deploy.yml", "label": "AdminSite",    "url": "https://admin.pilldoc.co.kr"},
+    {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site", "url": "https://www.pilldoc.co.kr"},
+    {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2", "url": "https://agentapi2.pilldoc.co.kr"},
+    {"name": "adpssite",    "app": "AdpsSiteLinux-Prod",  "workflow": "ci.yml",     "label": "ADPS Site",    "url": "https://www.adps.co.kr"},
     {"name": "pillcheckver2frontend", "staging_branch": "deploy/dev", "prod_branch": "deploy/prod", "workflow": "ci.yml", "label": "PillCheck",
      "hosts": {"staging": "staging.pillchk.com", "prod": "www.pillcheck.co.kr"}}
   ]

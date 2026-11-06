@@ -13,7 +13,7 @@ def commit(sha, msg, keys=()):
 
 
 def repo(commits, issues=(), known=True):
-    return {"name": "pilldocsite", "label": "필독 사이트", "app": "PilldocSiteNew-Prod",
+    return {"name": "pilldocsite", "label": "필독 사이트", "app": "PilldocSiteNew-Prod", "url": "https://www.pilldoc.co.kr",
             "prod": {"sha": "p1"}, "staging": {"sha": "s1"},
             "staging_only": {"commits": commits} if known else None,
             "issues": list(issues)}
@@ -45,6 +45,7 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(s["items"], [{"key": "PILLDOC-1", "title": "약국 검색", "kind": "추가"}])
         self.assertEqual(s["nokey"][0]["title"], "오타")
         self.assertEqual(s["staging_sha"], "s1")
+        self.assertEqual(s["url"], "https://www.pilldoc.co.kr")
         json.dumps(s)  # swap-log 에 그대로 쓸 수 있어야 한다
 
     def test_unknown_prod(self):
@@ -64,10 +65,17 @@ class Preview(unittest.TestCase):
                  issues=[{"key": "PILLDOC-1", "title": "약국 검색 추가"}])
         text, _ = notice.preview_text(notice.snapshot(r))
         lines = text.split("\n")
-        self.assertEqual(lines[0], "*필독 사이트 운영 반영 예정 — 이슈 1건 + 키 없는 커밋 1건*")
-        self.assertIn("• `PILLDOC-1` 약국 검색 추가", lines)
-        self.assertIn("• 오타", lines)
+        self.assertEqual(lines[0], "*필독 사이트 운영 swap 시작 — 이슈 1건, 기타 1건*")
+        self.assertEqual(lines[1:3], ["• 추가 PILLDOC-1 약국 검색 추가", "• 수정 오타"])
+        self.assertEqual(lines[-1], "_https://www.pilldoc.co.kr · PilldocSiteNew-Prod staging → production · 결과는 이 글 스레드에_")
         self.assertNotIn("**", text)
+        self.assertNotIn("`", text)   # 키를 코드로 감싸면 봇 전송 때 Jira 링크가 되지 않는다
+
+    def test_footer_without_url(self):
+        r = dict(repo([commit("b", "fix: 오타", [])]), url=None)
+        text, _ = notice.preview_text(notice.snapshot(r))
+        self.assertEqual(text.split("\n")[0], "*필독 사이트 운영 swap 시작 — 기타 1건*")
+        self.assertEqual(text.split("\n")[-1], "_PilldocSiteNew-Prod staging → production · 결과는 이 글 스레드에_")
 
     def test_limits(self):  # 이슈가 많고 제목이 길어도 300자·8줄 안, 넘친 것은 「외 N건」
         cs = [commit(str(i), "x", [f"PILLDOC-{i}"]) for i in range(12)]
@@ -75,7 +83,8 @@ class Preview(unittest.TestCase):
         text, _ = notice.preview_text(notice.snapshot(repo(cs, iss)))
         self.assertLessEqual(len(text), notice.MAX_CHARS)
         self.assertLessEqual(len(text.split("\n")), notice.MAX_LINES)
-        self.assertTrue(text.endswith("• 외 8건"))
+        self.assertIn("• 외 8건", text.split("\n"))
+        self.assertTrue(text.split("\n")[-1].startswith("_https://www.pilldoc.co.kr"))   # 꼬리말은 줄이지 않는다
         self.assertIn("…", text)
 
 
@@ -91,13 +100,20 @@ class Result(unittest.TestCase):
     def test_success_sorted_by_kind(self):
         text, _ = notice.result_text(self.rec())
         lines = text.split("\n")
-        self.assertEqual(lines[0], "*필독 사이트 운영 반영 완료 — 이슈 2건 + 키 없는 커밋 1건*")
-        self.assertEqual(lines[1], "시각: 11-05 14:30 · 추가 1 · 수정 1 · 변경 1")
+        self.assertEqual(lines[0], "*필독 사이트 운영 swap 완료 (11-05 14:30)*")
+        self.assertEqual(lines[1], "확인: https://www.pilldoc.co.kr")
         self.assertEqual([l.split()[1] for l in lines[2:]], ["추가", "수정", "변경"])
 
     def test_failure_and_undo(self):
-        self.assertIn("실패", notice.result_text(self.rec(ok=False))[0])
-        self.assertIn("되돌림", notice.result_text(self.rec(action="undo", info={}))[0])
+        self.assertEqual(notice.result_text(self.rec(ok=False))[0],
+                         "*필독 사이트 운영 swap 실패 — 운영은 이전 버전 그대로 (11-05 14:30)*\n확인하고 다시 알려 드리겠습니다.")
+        undo = {"snapshot": {"label": "필독 사이트", "url": "https://www.pilldoc.co.kr"}}
+        self.assertEqual(notice.result_text(self.rec(action="undo", info=undo))[0],
+                         "*필독 사이트 swap 되돌림 — 이전 버전으로 운영 중 (11-05 14:30)*\n확인: https://www.pilldoc.co.kr")
+        self.assertEqual(notice.result_text(self.rec(action="undo", ok=False, info=undo))[0],
+                         "*필독 사이트 swap 되돌리기 실패 — 새 버전으로 운영 중 (11-05 14:30)*\n확인하고 다시 알려 드리겠습니다.")
+        self.assertEqual(notice.result_text(self.rec(action="undo", info={}))[0],   # 주소 없는 기록
+                         "*pilldocsite swap 되돌림 — 이전 버전으로 운영 중 (11-05 14:30)*")
 
     def test_old_record_without_snapshot(self):
         text, why = notice.result_text(self.rec(info={"prod": "p", "staging": "s"}))

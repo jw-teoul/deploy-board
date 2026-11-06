@@ -329,7 +329,7 @@ class Collector:
         name, app = rc["name"], rc.get("app")
         stg, prd = rc.get("staging_branch", "deploy/prod"), rc.get("prod_branch")
         t0 = time.time()
-        r = {"name": name, "label": rc.get("label", name), "app": app, "errors": [], "notes": [],
+        r = {"name": name, "label": rc.get("label", name), "app": app, "url": rc.get("url"), "errors": [], "notes": [],
              "staging_branch": stg, "prod_branch": prd, "mode": "swap" if app else ("branch" if prd else "none"),
              "web": f"https://github.com/{self.org}/{name}"}
         g = Repo(self.local_path(rc), self.org, name)

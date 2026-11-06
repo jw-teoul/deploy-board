@@ -38,8 +38,9 @@ def load_env_file(path, env=None):
     return keys
 
 
-def config(env=None):
-    """→ {"token","channel","api"} 또는 None(꺼짐)과 이유."""
+def config(env=None, links=None):
+    """→ {"token","channel","api"[,"jira_base","key_re"]} 또는 None(꺼짐)과 이유.
+    links: repos.json 설정 — jira_base·issue_key_pattern 이 있으면 보낼 때 이슈 키를 Jira 링크로 바꾼다."""
     env = os.environ if env is None else env
     token = (env.get("DEPLOY_BOARD_SLACK_TOKEN") or "").strip()
     channel = (env.get("DEPLOY_BOARD_SLACK_CHANNEL") or "").strip()
@@ -52,7 +53,12 @@ def config(env=None):
     api = (env.get("DEPLOY_BOARD_SLACK_API") or DEFAULT_API).rstrip("/")
     if not (api.startswith("https://") or re.match(r"^http://(127\.0\.0\.1|localhost)(:\d+)?(/|$)", api)):
         return None, "DEPLOY_BOARD_SLACK_API 는 https:// 주소만(시험용 127.0.0.1 제외)"
-    return {"token": token, "channel": channel, "api": api}, None
+    cfg = {"token": token, "channel": channel, "api": api}
+    links = links or {}
+    if links.get("jira_base") and links.get("issue_key_pattern"):
+        cfg["jira_base"] = links["jira_base"]
+        cfg["key_re"] = re.compile(links["issue_key_pattern"])
+    return cfg, None
 
 
 def public(cfg, why=None):
@@ -65,6 +71,13 @@ def escape(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def linkify(escaped, cfg):
+    """escape 한 글의 이슈 키 → <jira_base+키|키>. 키 규칙(repos.json)에 맞는 것만 — 「UTF-8」 같은 글자는 그대로."""
+    if not cfg.get("key_re") or not cfg.get("jira_base"):
+        return escaped
+    return cfg["key_re"].sub(lambda m: f"<{cfg['jira_base']}{m.group(0)}|{m.group(0)}>", escaped)
+
+
 def _scrub(msg, cfg):
     return str(msg).replace(cfg["token"], "***")[:300]
 
@@ -73,9 +86,10 @@ def post(cfg, text, thread_ts=None, timeout=10):
     """chat.postMessage → (ok, ts, error). 예외를 밖으로 던지지 않는다."""
     if not text or not text.strip():
         return False, None, "보낼 문구가 비어 있음"
-    if len(escape(text)) > MAX_TEXT:
+    out = linkify(escape(text), cfg)
+    if len(out) > MAX_TEXT:
         return False, None, f"문구가 {MAX_TEXT}자를 넘음"
-    body = {"channel": cfg["channel"], "text": escape(text), "unfurl_links": False, "unfurl_media": False}
+    body = {"channel": cfg["channel"], "text": out, "unfurl_links": False, "unfurl_media": False}
     if thread_ts:
         body["thread_ts"] = thread_ts
     req = urllib.request.Request(cfg["api"] + "/chat.postMessage", data=json.dumps(body).encode("utf-8"), method="POST",

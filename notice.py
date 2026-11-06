@@ -68,6 +68,7 @@ def snapshot(repo):
             t = clean_title(titles.get(k) or c.get("message"), k)
             items.append({"key": k, "title": clean_title(strip_prefix(t), k), "kind": kind_of(t)})
     return {"repo": repo.get("name"), "label": repo.get("label") or repo.get("name"), "app": repo.get("app"),
+            "url": repo.get("url"),
             "prod_sha": (repo.get("prod") or {}).get("sha"), "staging_sha": (repo.get("staging") or {}).get("sha"),
             "commits": len(so), "items": items, "nokey": nokey,
             "known": repo.get("staging_only") is not None}
@@ -79,29 +80,32 @@ def _count(snap):
     if n:
         parts.append(f"이슈 {n}건")
     if m:
-        parts.append(f"키 없는 커밋 {m}건")
-    return " + ".join(parts) or "커밋 0건"
+        parts.append(f"기타 {m}건")
+    return ", ".join(parts) or "커밋 0건"
 
 
-def _bullets(rows, with_kind=False):
-    """rows: [(kind, key|None, title)] → 불릿 줄(MAX_ITEMS 넘으면 「외 N건」)."""
-    if with_kind:
-        rows = sorted(rows, key=lambda r: KIND_ORDER.index(r[0]))
+def _rows(snap):
+    return [(i["kind"], i["key"], i["title"]) for i in snap["items"]] + [(c["kind"], None, c["title"]) for c in snap["nokey"]]
+
+
+def _bullets(rows):
+    """rows: [(kind, key|None, title)] → 종류 순 불릿 줄(MAX_ITEMS 넘으면 「외 N건」).
+    키는 글자 그대로 둔다 — 봇이 보낼 때 slack.post 가 Jira 링크로 바꾼다(코드로 감싸면 링크가 안 된다)."""
+    rows = sorted(rows, key=lambda r: KIND_ORDER.index(r[0]) if r[0] in KIND_ORDER else len(KIND_ORDER))
     shown = rows if len(rows) <= MAX_ITEMS else rows[:MAX_ITEMS - 1]
     out = []
     for kind, key, title in shown:
-        head = (f"{kind} " if with_kind else "") + (f"`{key}` " if key else "")
-        out.append([f"• {head}", title])
+        out.append([f"• {kind} " + (f"{key} " if key else ""), title])
     if len(shown) < len(rows):
         out.append([f"• 외 {len(rows) - len(shown)}건", ""])
     return out
 
 
-def _fit(head_lines, bullets):
-    """머리 줄 + 불릿을 MAX_CHARS 안에 맞춘다 — 불릿 제목을 고르게 줄인다."""
+def _fit(head_lines, bullets, tail_lines=()):
+    """머리 줄 + 불릿 + 꼬리 줄을 MAX_CHARS 안에 맞춘다 — 불릿 제목만 고르게 줄인다."""
     def build(limit):
         rows = [p + (t if len(t) <= limit else t[:max(limit - 1, 1)] + "…") for p, t in bullets]
-        return "\n".join(head_lines + rows)
+        return "\n".join(list(head_lines) + rows + list(tail_lines))
     limit = max((len(t) for _, t in bullets), default=0)
     text = build(limit)
     while len(text) > MAX_CHARS and limit > 8:
@@ -116,10 +120,9 @@ def preview_text(snap):
         return None, "운영 SHA 를 몰라 나갈 커밋을 셀 수 없음"
     if not snap["commits"]:
         return None, "스테이징에만 있는 커밋 없음(나갈 것 없음)"
-    head = [f"*{snap['label']} 운영 반영 예정 — {_count(snap)}*",
-            f"대상: `{snap['app']}` staging → production"]
-    rows = [(i["kind"], i["key"], i["title"]) for i in snap["items"]] + [(c["kind"], None, c["title"]) for c in snap["nokey"]]
-    return _fit(head, _bullets(rows)), None
+    head = [f"*{snap['label']} 운영 swap 시작 — {_count(snap)}*"]
+    foot = " · ".join(p for p in (snap.get("url"), f"{snap['app']} staging → production", "결과는 이 글 스레드에") if p)
+    return _fit(head, _bullets(_rows(snap)), [f"_{foot}_"]), None
 
 
 def kst(iso):
@@ -133,22 +136,20 @@ def result_text(rec):
     """swap-log 기록 하나 → 결과 문구. 스냅숏이 없는(이 기능 전) 기록이면 None 과 이유."""
     if not rec:
         return None, "이 PC 에서 이 레포를 swap 한 기록 없음"
-    label = (rec.get("info") or {}).get("snapshot", {}).get("label") or rec.get("repo")
+    snap = (rec.get("info") or {}).get("snapshot") or {}
+    label = snap.get("label") or rec.get("repo")
     when = kst(rec.get("finished_at"))
+    check = [f"확인: {snap['url']}"] if snap.get("url") else []
+    later = "확인하고 다시 알려 드리겠습니다."
     if not rec.get("ok") and rec.get("action") == "undo":
-        return f"*{label} 되돌리기 실패 — 새 버전이 운영에 그대로*\n시각: {when}\n원인 확인 중입니다.", None
+        return f"*{label} swap 되돌리기 실패 — 새 버전으로 운영 중 ({when})*\n{later}", None
     if not rec.get("ok"):
-        return f"*{label} 운영 반영 실패 — 운영은 그대로*\n시각: {when}\n원인 확인 중입니다.", None
+        return f"*{label} 운영 swap 실패 — 운영은 이전 버전 그대로 ({when})*\n{later}", None
     if rec.get("action") == "undo":
-        return f"*{label} 운영 반영 되돌림 — 이전 운영으로 복구*\n시각: {when}", None
-    snap = (rec.get("info") or {}).get("snapshot")
-    if not snap:
+        return "\n".join([f"*{label} swap 되돌림 — 이전 버전으로 운영 중 ({when})*"] + check), None
+    if "items" not in snap:
         return None, "이 swap 기록에는 나간 커밋 목록이 없음(알림 문구 기능 전 기록)"
-    rows = [(i["kind"], i["key"], i["title"]) for i in snap["items"]] + [(c["kind"], None, c["title"]) for c in snap["nokey"]]
-    kinds = {k: sum(1 for r in rows if r[0] == k) for k in KIND_ORDER}
-    summary = " · ".join(f"{k} {n}" for k, n in kinds.items() if n) or "변경 없음"
-    head = [f"*{label} 운영 반영 완료 — {_count(snap)}*", f"시각: {when} · {summary}"]
-    return _fit(head, _bullets(rows, with_kind=True)), None
+    return _fit([f"*{label} 운영 swap 완료 ({when})*"] + check, _bullets(_rows(snap))), None
 
 
 def last_record(log_path, repo):

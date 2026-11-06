@@ -77,6 +77,13 @@ class Config(unittest.TestCase):
         self.assertIsNotNone(slack.config(dict(base, DEPLOY_BOARD_SLACK_API="https://slack.example.com/api"))[0])
         self.assertIsNotNone(slack.config(dict(base, DEPLOY_BOARD_SLACK_API="http://127.0.0.1:8798/api"))[0])
 
+    def test_links_from_repos_json(self):
+        base = {"DEPLOY_BOARD_SLACK_TOKEN": TOKEN, "DEPLOY_BOARD_SLACK_CHANNEL": CHANNEL}
+        cfg, _ = slack.config(base, links={"jira_base": "https://edb.atlassian.net/browse/", "issue_key_pattern": r"\bPILLDOC-\d+\b"})
+        self.assertEqual(cfg["jira_base"], "https://edb.atlassian.net/browse/")
+        self.assertEqual(cfg["key_re"].pattern, r"\bPILLDOC-\d+\b")
+        self.assertNotIn("jira_base", slack.config(base)[0])   # 설정이 없으면 링크 없이
+
 
 class EnvFile(unittest.TestCase):
     def test_reads_board_keys_without_overriding(self):
@@ -139,6 +146,19 @@ class Post(unittest.TestCase):
         ok, _, err = slack.post(self.cfg, "*제목* <!channel> <https://evil|링크> a&b")
         self.assertTrue(ok, err)
         self.assertEqual(self.fake.calls[0]["body"]["text"], "*제목* &lt;!channel&gt; &lt;https://evil|링크&gt; a&amp;b")
+
+    def test_issue_keys_become_jira_links(self):
+        import re
+        cfg = dict(self.cfg, jira_base="https://edb.atlassian.net/browse/", key_re=re.compile(r"\b(?:PILLDOC|PI)-\d+\b"))
+        ok, _, err = slack.post(cfg, "• 수정 PILLDOC-12 UTF-8 <봉투> & PI-3")
+        self.assertTrue(ok, err)
+        self.assertEqual(self.fake.calls[0]["body"]["text"],
+                         "• 수정 <https://edb.atlassian.net/browse/PILLDOC-12|PILLDOC-12> UTF-8 &lt;봉투&gt; &amp; "
+                         "<https://edb.atlassian.net/browse/PI-3|PI-3>")
+
+    def test_no_links_without_config(self):
+        slack.post(self.cfg, "PILLDOC-12")
+        self.assertEqual(self.fake.calls[0]["body"]["text"], "PILLDOC-12")
 
     def test_ok_without_ts_is_failure(self):
         self.fake.no_ts = True
@@ -206,7 +226,7 @@ class SwapFlow(SwapBase):
         pre, res = self.fake.calls
         self.assertEqual(pre["body"]["text"], "*필독 사이트 운영 반영 예정*")
         self.assertEqual(res["body"]["thread_ts"], done["info"]["slack"]["ts"])
-        self.assertIn("운영 반영 완료", res["body"]["text"])
+        self.assertIn("운영 swap 완료", res["body"]["text"])
         self.assertTrue(done["slack"]["result_ok"])
         _, undone = self.run_swap(action="undo")
         self.assertEqual(len(self.fake.calls), 3)
@@ -227,8 +247,8 @@ class SwapFlow(SwapBase):
         text = self.fake.calls[2]["body"]["text"]
         self.assertEqual(self.fake.calls[2]["body"]["thread_ts"], done["info"]["slack"]["ts"])
         self.assertIn("되돌리기 실패", text)
-        self.assertIn("새 버전이 운영에 그대로", text)
-        self.assertNotIn("운영 반영 실패", text)
+        self.assertIn("새 버전으로 운영 중", text)
+        self.assertNotIn("운영 swap 실패", text)
 
     def test_preview_failure_blocks_swap(self):
         self.fake.fail_main = True
@@ -283,7 +303,8 @@ class Endpoint(SwapBase):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         server.OPT["port"] = self.httpd.server_address[1]
         server.OPT["token"] = "board-token"
-        server.repo_state = lambda name: {"name": name, "label": "필독 사이트", "staging_only": {"commits": []}, "issues": []}
+        server.repo_state = lambda name: {"name": name, "label": "필독 사이트", "url": "https://www.pilldoc.co.kr",
+                                          "staging_only": {"commits": []}, "issues": []}
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def tearDown(self):
@@ -322,7 +343,8 @@ class Endpoint(SwapBase):
         self.assertEqual(code, 202, j)
         self.wait()
         self.assertEqual(self.fake.calls[2]["body"]["thread_ts"], self.fake.calls[0]["body"].get("thread_ts") or self.runner.status["last"]["slack"]["ts"])
-        self.assertIn("필독 사이트 운영 반영 되돌림", self.fake.calls[2]["body"]["text"])
+        self.assertIn("필독 사이트 swap 되돌림", self.fake.calls[2]["body"]["text"])
+        self.assertIn("확인: https://www.pilldoc.co.kr", self.fake.calls[2]["body"]["text"])   # 되돌리기 기록에도 사이트 주소
 
     def test_preview_failure_returns_409_and_no_swap(self):
         self.fake.fail_main = True
