@@ -68,8 +68,9 @@ def whoami(run=None):
 class SwapRunner:
     """swap·되돌리기를 한 번에 한 건만 백그라운드로 실행하고 상태를 status dict 에 비춘다."""
 
-    def __init__(self, cfg_loader, log_path, on_done):
-        self.cfg_loader, self.log_path, self.on_done = cfg_loader, log_path, on_done
+    def __init__(self, cfg_loader, log_path, on_done, notify=None):
+        """notify(done) → dict|None: 끝난 기록을 남기기 전에 부른다(Slack 결과 전송). 돌려준 dict 는 기록의 slack 칸에 합친다."""
+        self.cfg_loader, self.log_path, self.on_done, self.notify = cfg_loader, log_path, on_done, notify
         self.lock = threading.Lock()
         self.check_lock = threading.Lock()
         self.fake = os.environ.get("DEPLOY_BOARD_SWAP_CMD")
@@ -143,19 +144,28 @@ class SwapRunner:
         self.status["undo"].pop(repo, None)
         return False
 
-    def start(self, repo, action, info=None):
-        """→ (시작했나, 이유). action 은 swap | undo."""
+    def can_start(self, repo, action):
+        """→ (시작할 수 있나, 이유, 설정, 레포 설정). Slack 예고를 보내기 전에 미리 확인하는 데도 쓴다."""
         cfg = self.cfg_loader()
         rc = next((r for r in cfg["repos"] if r["name"] == repo), None)
         if not rc or not rc.get("app"):
-            return False, "swap 모드 레포가 아님"
+            return False, "swap 모드 레포가 아님", cfg, rc
         if action not in ("swap", "undo"):
-            return False, "알 수 없는 동작"
+            return False, "알 수 없는 동작", cfg, rc
         perm = self.status["perms"].get(repo)
         if not perm or not perm.get("ok"):
-            return False, "swap 권한 없음 또는 조회 전" + (f" — {perm['reason']}" if perm else "")
+            return False, "swap 권한 없음 또는 조회 전" + (f" — {perm['reason']}" if perm else ""), cfg, rc
         if action == "undo" and not self.undo_open(repo):
-            return False, f"되돌릴 swap 이 없음(이 보드에서 {UNDO_MINUTES}분 안에 한 swap 만)"
+            return False, f"되돌릴 swap 이 없음(이 보드에서 {UNDO_MINUTES}분 안에 한 swap 만)", cfg, rc
+        if self.status["job"]:
+            return False, f"다른 swap 진행 중({self.status['job']['repo']})", cfg, rc
+        return True, "시작 가능", cfg, rc
+
+    def start(self, repo, action, info=None):
+        """→ (시작했나, 이유). action 은 swap | undo."""
+        ok, why, cfg, rc = self.can_start(repo, action)
+        if not ok:
+            return False, why
         with self.lock:
             if self.status["job"]:
                 return False, f"다른 swap 진행 중({self.status['job']['repo']})"
@@ -186,8 +196,17 @@ class SwapRunner:
         if res["ok"] and job["action"] == "swap":
             until = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=UNDO_MINUTES)).isoformat(timespec="seconds")
             self.status["undo"][job["repo"]] = {"at": done["finished_at"], "until": until, "id": job["id"]}
+            if (job["info"] or {}).get("slack"):   # 되돌리기 결과도 같은 Slack 스레드에 단다
+                self.status["undo"][job["repo"]]["slack"] = dict(job["info"]["slack"])
         elif res["ok"] and job["action"] == "undo":
             self.status["undo"].pop(job["repo"], None)
+        if self.notify:
+            try:
+                extra = self.notify(done)
+                if extra:
+                    done["slack"] = extra
+            except Exception:
+                traceback.print_exc()
         self._log(done)
         with self.lock:
             self.status["last"] = done

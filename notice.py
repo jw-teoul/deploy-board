@@ -135,6 +135,8 @@ def result_text(rec):
         return None, "이 PC 에서 이 레포를 swap 한 기록 없음"
     label = (rec.get("info") or {}).get("snapshot", {}).get("label") or rec.get("repo")
     when = kst(rec.get("finished_at"))
+    if not rec.get("ok") and rec.get("action") == "undo":
+        return f"*{label} 되돌리기 실패 — 새 버전이 운영에 그대로*\n시각: {when}\n원인 확인 중입니다.", None
     if not rec.get("ok"):
         return f"*{label} 운영 반영 실패 — 운영은 그대로*\n시각: {when}\n원인 확인 중입니다.", None
     if rec.get("action") == "undo":

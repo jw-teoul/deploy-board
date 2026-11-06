@@ -89,6 +89,10 @@
   dialog#swapDlg { border:1px solid var(--line); border-radius:10px; padding:18px 20px; width:min(640px, calc(100vw - 32px)); color:var(--ink) }
   dialog#swapDlg::backdrop { background:rgba(15,23,42,.45) }
   #swapDlg h3 { margin:0 0 8px; font-size:16px } #swapDlg ul { max-height:200px; overflow:auto; padding-left:18px; font-size:12px; margin:4px 0 }
+  #swapDlg .slackbox { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px }
+  #swapDlg .slackbox textarea { width:100%; min-height:120px; margin-top:6px; font:12px/1.5 ui-monospace, Consolas, monospace; padding:8px; border:1px solid var(--line); border-radius:6px; resize:vertical; color:var(--ink); background:#f8fafc }
+  #swapDlg .slackbox textarea:disabled { opacity:.55 }
+  #swapDlg .slackbox input[type=checkbox] { width:auto; padding:0; margin:0 6px 0 0; vertical-align:-2px }
   #swapDlg .row { margin:6px 0; font-size:13px } #swapDlg code.cmd { display:block; font-size:11px; background:#f3f4f6; padding:6px 8px; border-radius:6px; word-break:break-all }
   #swapDlg input { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; width:100% }
   #swapDlg .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px }
@@ -258,6 +262,8 @@ function trackStatus(st) {
     tags.push(`<span class="tag" title="이 서버는 수집하지 않고, 수집 PC 가 올려 준 결과만 보여 줍니다. swap 은 Microsoft 로그인한 사람의 Azure 권한으로만 됩니다.">공유 보기 전용</span>`);
     if (c && Date.now() - new Date(c) > 30 * 60000) tags.push(`<span class="tag warn" title="마지막 수집이 30분 넘게 지났습니다. 수집 PC 가 꺼졌거나 올리기에 실패했을 수 있습니다.">수집 PC 꺼짐?</span>`);
   }
+  if (st?.mode === "swap" && st.slack) tags.push(st.slack.enabled ? `<span class="tag" title="swap 확인 창에서 「Slack 에 알리기」를 체크하면 예고를 보내고 결과를 그 스레드에 답니다.">Slack 켜짐 · ${esc(st.slack.channel)}</span>`
+                                                       : `<span class="tag" title="${esc(st.slack.reason || "")}">Slack 꺼짐</span>`);
   if (st?.mode === "swap") tags.push(`<span class="tag danger" title="--allow-swap 으로 띄운 이 PC 전용 화면입니다. swap 은 내 az 로그인 권한으로 실행됩니다.">swap 켜짐${st.swap?.fake ? " (가짜 명령)" : ""}</span>`);
   const pub = st?.publish;
   if (pub) tags.push(pub.error ? `<span class="tag warn" title="${esc(pub.error)}">공유 서버 올리기 실패 ${fmt(pub.last)}</span>`
@@ -267,8 +273,9 @@ function trackStatus(st) {
   showAccounts(st);
   const last = st?.swap?.last;
   if (last && last.id !== LAST_DONE) {
-    if (LAST_DONE !== null) toast(last.ok ? `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 완료 — 보드 반영까지 보통 1~2분`
-                                          : `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 실패\n${last.error || ""}`, !last.ok);
+    const slackBad = last.slack && !last.slack.result_ok ? `\nSlack 결과 전송 실패 — ${last.slack.result_error || ""}\n「알림 문구」에서 복사해 붙여 넣어 주세요.` : "";
+    if (LAST_DONE !== null) toast((last.ok ? `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 완료 — 보드 반영까지 보통 1~2분`
+                                           : `${last.app} ${last.action === "undo" ? "되돌리기" : "swap"} 실패\n${last.error || ""}`) + slackBad, !last.ok || !!slackBad);
     LAST_DONE = last.id;
   } else if (LAST_DONE === null) LAST_DONE = last?.id || "";
   if (ro) { $("#watch").textContent = "수집 PC 에서 올린 결과"; return; }
@@ -352,12 +359,23 @@ function openSwap(repo, act) {
     ${undo ? `<div class="row">운영과 스테이징 슬롯을 다시 맞바꿉니다. 방금 나간 커밋이 운영에서 빠지고 이전 운영이 돌아옵니다.</div>`
            : `<div class="row">운영에 나갈 커밋 ${so.length}개 · 이슈 ${keys.length ? keys.map(jira).join(", ") : "없음"}</div>
               <ul>${so.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span></li>`).join("")}</ul>`}
+    ${!web && !undo && LAST_ST?.slack?.enabled ? `<div class="slackbox"><label><input type="checkbox" id="slackOn"> Slack 에 알리기 — 채널 <code>${esc(LAST_ST.slack.channel)}</code></label>
+      <div class="small mute">체크하고 실행하면 아래 예고를 먼저 보내고(보내지 못하면 swap 하지 않음), 끝나면 결과를 그 글의 스레드에 답니다. 되돌리기 결과도 같은 스레드에 달립니다.</div>
+      <textarea id="slackText" spellcheck="false" disabled placeholder="예고 문구 불러오는 중…"></textarea></div>` : ""}
+    ${!web && undo && sw?.undo?.[repo]?.slack ? `<div class="row small">되돌리기 결과를 Slack 예고 글의 스레드에 답니다.</div>` : ""}
     <div class="row small mute">${web ? `실행 요청(${esc(WEBLOGIN.account?.username || "")} 의 Microsoft 로그인 권한으로 이 브라우저가 보냄, Azure 활동 기록에 그 이름으로 남음)`
                                        : "실행 명령(내 az 로그인으로 실행, Azure 활동 기록에 내 이름으로 남음)"}</div><code class="cmd">${esc(cmd)}</code>`;
   $("#swapApp").textContent = r.app;
   const inp = $("#swapConfirm"), ok = $("#swapOk");
   inp.value = ""; ok.disabled = true; ok.textContent = undo ? "되돌리기 실행" : "swap 실행";
   inp.oninput = () => { ok.disabled = inp.value.trim() !== r.app; };
+  const sOn = $("#slackOn"), sText = $("#slackText");
+  if (sOn) {
+    sOn.onchange = () => { sText.disabled = !sOn.checked; };
+    fetch(`/api/notice?repo=${encodeURIComponent(repo)}`, {cache:"no-store"}).then(x => x.json()).then(j => {
+      sText.value = j.preview || ""; sText.placeholder = j.preview ? "" : (j.preview_why || "예고 문구 없음") + " — 직접 써도 됩니다";
+    }).catch(() => { sText.placeholder = "예고 문구를 못 불러옴 — 직접 써도 됩니다"; });
+  }
   ok.onclick = async () => {
     ok.disabled = true;
     if (web) {
@@ -368,9 +386,13 @@ function openSwap(repo, act) {
     }
     try {
       const res = await fetch("/api/swap", {method:"POST", headers:{"Content-Type":"application/json", "X-Board-Token":TOKEN},
-        body: JSON.stringify({repo, action: undo ? "undo" : "swap", info: {prod: r.prod?.sha, staging: r.staging?.sha, commits: so.length, keys}})});
+        body: JSON.stringify({repo, action: undo ? "undo" : "swap", info: {prod: r.prod?.sha, staging: r.staging?.sha, commits: so.length, keys},
+                              ...(sOn?.checked ? {slack: {text: sText.value}} : {})})});
       const j = await res.json();
-      if (!res.ok || !j.started) { toast(`시작 못 함 — ${j.reason || j.error || res.status}`, true); ok.disabled = false; return; }
+      if (!res.ok || !j.started) {
+        if (j.slack_sent && sOn) { sOn.checked = false; sText.disabled = true; }   // 예고는 이미 나갔다 — 다시 눌러도 두 번 보내지 않게
+        toast(`시작 못 함 — ${j.reason || j.error || res.status}`, true); ok.disabled = false; return;
+      }
       $("#swapDlg").close(); trackStatus(j.status);
       clearInterval(SWAP_POLL);
       SWAP_POLL = setInterval(async () => { try { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); trackStatus(t); if (!t.swap?.job) { clearInterval(SWAP_POLL); SWAP_POLL = null; } } catch {} }, 2000);

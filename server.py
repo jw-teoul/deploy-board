@@ -32,6 +32,7 @@ from urllib.parse import parse_qs
 import collector
 import notice
 import publish
+import slack
 import swap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,7 +42,7 @@ SWAP_LOG = os.path.join(HERE, "data", "swap-log.jsonl")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 # 실행 방법(main 에서 정함). readonly 와 swap 은 함께 켜질 수 없다.
-OPT = {"readonly": False, "swap": None, "publish": None, "token": None, "port": None}
+OPT = {"readonly": False, "swap": None, "publish": None, "token": None, "port": None, "slack": None}
 
 # ---------- 정적 파일 버전(캐시 무효화) ----------
 # index.html 을 내보낼 때 pixel.js 주소에 내용 해시(?v=)를 붙이고, 그림 파일 묶음의 해시를 data-assets 로 넘긴다.
@@ -222,6 +223,45 @@ def sync_collected_at():
             _state_mtime[0] = m
         except Exception:
             pass   # 바꿔 끼우는 순간이면 다음에 다시
+
+
+def slack_result(done):
+    """swap·되돌리기가 끝나면 예고 글의 스레드에 결과를 단다(예고를 보낸 swap 만). → swap-log 의 slack 칸."""
+    th = (done.get("info") or {}).get("slack")
+    if not th or not OPT["slack"]:
+        return None
+    text, why = notice.result_text(done)
+    if not text:
+        return dict(th, result_ok=False, result_error=why)
+    ok, _, err = slack.post(OPT["slack"], text, thread_ts=th["ts"])
+    return dict(th, result_ok=ok, result_error=err)
+
+
+def slack_preview(repo, action, info, req):
+    """swap 요청에 Slack 예고가 있으면 swap 전에 보낸다 → (오류 문구 또는 None). 보내면 info["slack"] 에 스레드를 적는다.
+    되돌리기는 예고 없이 원래 swap 의 스레드를 이어 쓴다."""
+    if action == "undo":
+        u = OPT["swap"].status["undo"].get(repo) or {}
+        if u.get("slack") and OPT["slack"]:
+            info["slack"] = dict(u["slack"])
+        return None
+    if not req:
+        return None
+    if not OPT["slack"]:
+        return "Slack 이 꺼져 있음(환경 변수 없음) — 체크를 끄고 다시 누름"
+    text = (req.get("text") or "").strip() if isinstance(req, dict) else ""
+    if not text:
+        return "Slack 예고 문구가 비어 있음"
+    if len(slack.escape(text)) > slack.MAX_TEXT:
+        return f"Slack 예고 문구가 {slack.MAX_TEXT}자를 넘음"
+    ok, why, _, _ = OPT["swap"].can_start(repo, action)
+    if not ok:   # 시작 못 할 swap 의 예고를 보내지 않는다
+        return why
+    sent, ts, err = slack.post(OPT["slack"], text)
+    if not sent:
+        return f"Slack 예고 전송 실패 — swap 하지 않음({err}). 체크를 끄면 swap 만 함"
+    info["slack"] = {"channel": OPT["slack"]["channel"], "ts": ts}
+    return None
 
 
 def after_swap(repo):
@@ -499,7 +539,18 @@ class Handler(SimpleHTTPRequestHandler):
                 r = repo_state(body.get("repo"))
                 if r:
                     info["snapshot"] = notice.snapshot(r)
+            if body.get("action") == "undo":   # 되돌리기 결과 문구의 이름(레포 label)
+                r = repo_state(body.get("repo"))
+                if r:
+                    info["snapshot"] = {"label": r.get("label") or r.get("name")}
+            err = slack_preview(body.get("repo"), body.get("action"), info, body.get("slack"))
+            if err:
+                return self._json({"started": False, "reason": err, "status": status}, 409)
             ok, why = OPT["swap"].start(body.get("repo"), body.get("action"), info)
+            if not ok and info.get("slack") and body.get("action") == "swap":   # 예고 뒤에 시작 못 하면 스레드에 알린다
+                sent, _, serr = slack.post(OPT["slack"], f"swap 시작 못 함 — 운영은 그대로\n이유: {why}", thread_ts=info["slack"]["ts"])
+                why = f"{why} — Slack 예고는 이미 보냄, " + ("스레드에 「시작 못 함」을 달았음" if sent else f"스레드 알림도 실패({serr})")
+                return self._json({"started": False, "reason": why, "slack_sent": True, "status": status}, 409)
             return self._json({"started": ok, "reason": why, "status": status}, 202 if ok else 409)
         if path == "/api/recheck":
             if not OPT["swap"]:
@@ -552,7 +603,11 @@ def main():
         global SWAP_LOG
         if os.environ.get("DEPLOY_BOARD_SWAP_CMD"):   # 가짜 명령 시험 기록은 실제 swap 기록과 섞지 않는다(알림 결과 문구가 읽음)
             SWAP_LOG = SWAP_LOG.replace(".jsonl", ".fake.jsonl")
-        OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap)
+        OPT["slack"], why = slack.config()
+        for k in ("DEPLOY_BOARD_SLACK_TOKEN", "DEPLOY_BOARD_SLACK_CHANNEL", "DEPLOY_BOARD_SLACK_API"):
+            os.environ.pop(k, None)   # az·gh·git 같은 자식 프로세스가 봇 토큰을 물려받지 않게
+        status["slack"] = slack.public(OPT["slack"], why)
+        OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap, notify=slack_result)
         status["mode"] = "swap"
         status["swap"] = OPT["swap"].status
         threading.Thread(target=OPT["swap"].perm_loop, daemon=True).start()

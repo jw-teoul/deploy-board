@@ -16,7 +16,7 @@
 ```
 python server.py --no-collect --open --check 30 --swap-check 60   # --no-watch 로 감시 끄기
 python collector.py --repo adminsite   # 수집만(서버 없이) → data/state.json
-python -m unittest   # 단계 판정·swap 권한 판정·화면 보안 헤더 테스트(test_*.py)
+python -m unittest   # 단계 판정·swap 권한 판정·화면 보안 헤더·Slack 전송 테스트(test_*.py)
 node test_weblogin.js                         # 웹 로그인 권한 판정(perm_cases.json 을 Python 과 같이 씀)
 ```
 전제(수집하는 PC): `gh`(GitHub 로그인)·`az`(Azure 로그인, Reader)·`git` 이 있고, `../projects/<repo>` 에 기준 클론이 있다(수집기는 `git fetch` 만 하고 checkout 하지 않는다). 공유 서버에는 Python 3 만 있으면 된다.
@@ -53,6 +53,18 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
   - 예고: 지금 스테이징에만 있는 커밋(swap 하면 운영에 나갈 것)을 이슈 키별로 묶는다. 제목은 PR 제목 → 커밋 첫 줄(Jira 는 읽지 않음).
   - 결과: 이 PC 의 마지막 swap 기록의 스냅숏으로 「반영 완료」를 만들고 추가·수정·변경으로 나눈다(conventional 접두어 `feat`·`fix` 와 「추가」「수정」 같은 낱말로 판정). 실패·되돌리기 기록이면 그 문구가, 공유 서버에서는 「swap 한 PC 에서 확인」 안내가 나온다.
 - 사내 글 형식을 따른다: 첫 줄 결론(`*굵게*`), `•` 한 줄 불릿 5개까지(넘으면 「외 N건」), 300자·8줄 안(넘으면 제목을 줄임). 코드 `notice.py`, API `GET /api/notice?repo=<이름>`.
+
+## Slack 봇 전송(내 PC 용 `--allow-swap` 에서만)
+- 켜는 법: 이 PC 의 환경 변수 두 개를 넣고 보드를 다시 띄운다. 헤더에 「Slack 켜짐 · C…」가 보인다(없거나 모양이 틀리면 「Slack 꺼짐」, 툴팁에 이유).
+  - `DEPLOY_BOARD_SLACK_TOKEN` — 봇 토큰 `xoxb-…`. Slack 앱의 Bot Token Scopes 에 `chat:write` 만 주면 된다. 받는 채널에 봇을 초대해 둔다(`/invite @봇이름`).
+  - `DEPLOY_BOARD_SLACK_CHANNEL` — 채널 ID `C…`(채널 이름 아님. 채널 정보 맨 아래에 있음).
+  - PowerShell 예: `[Environment]::SetEnvironmentVariable("DEPLOY_BOARD_SLACK_TOKEN", "xoxb-…", "User")` 뒤 새 터미널에서 실행.
+- 토큰은 repos.json·git·notes·공유 서버에 두지 않는다. 화면·`/api/status`·swap-log·state.json 에도 나가지 않는다(채널 ID 만 보임). 공유 서버(`--readonly`)와 웹 로그인 swap 에서는 보내지 않는다.
+- 흐름: swap 확인 창에 「Slack 에 알리기」 체크(기본 꺼짐)와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면
+  1. swap 을 시작할 수 있는지(권한·진행 중인 swap) 먼저 보고, 예고 글을 채널에 보낸다. **보내지 못하면 swap 하지 않는다**(체크를 끄고 다시 누르면 swap 만).
+  2. swap 이 끝나면 결과(완료·실패) 문구를 예고 글의 스레드에 단다. 30분 안의 되돌리기 결과도 같은 스레드에 단다.
+  3. 스레드 전송이 실패해도 swap 결과는 그대로이고, 토스트로 알린다. 중복 글을 막으려고 다시 보내지 않는다 — 「알림 문구」에서 복사해 붙여 넣는다.
+- swap-log 기록의 `info.slack`·`slack` 에 채널·글 ts·결과 전송 여부가 남는다. 코드 `slack.py`, 시험 `test_slack.py`(가짜 Slack API, 실제 전송 없음). 시험 때는 `DEPLOY_BOARD_SLACK_API` 로 API 주소를 가짜 서버로 바꾼다.
 
 ## 공유 서버(개발 서버) 설치·갱신·끄기
 개발 서버 `edbdev-ubuntu22-svr`(ssh 별칭 `datacrawler`)에 systemd 사용자 서비스로 띄운다. 8765 는 다른 프로그램이 쓰고 있어 8790 을 쓴다.
