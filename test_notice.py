@@ -33,6 +33,10 @@ class Kind(unittest.TestCase):
         self.assertEqual(notice.clean_title("[PILLDOC-12] 봉투 문구", "PILLDOC-12"), "봉투 문구")
         self.assertEqual(notice.clean_title("PILLDOC-12: 봉투 문구\n본문", "PILLDOC-12"), "봉투 문구")
         self.assertEqual(notice.clean_title(""), "(제목 없음)")
+        # 키 뒤에 이어 붙인 다른 키 줄임 표기(·3091·3088)도 함께 뗀다
+        self.assertEqual(notice.clean_title("PILLDOC-3087·3091·3088 운영 반영 — x", "PILLDOC-3087"), "운영 반영 — x")
+        self.assertEqual(notice.clean_title("[PILLDOC-1, PILLDOC-2] 봉투", "PILLDOC-1"), "봉투")
+        self.assertEqual(notice.clean_title("PILLDOC-1 2개 수정", "PILLDOC-1"), "2개 수정")
 
 
 class Snapshot(unittest.TestCase):

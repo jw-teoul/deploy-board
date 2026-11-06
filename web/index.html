@@ -299,6 +299,7 @@ function toast(msg, bad) {
   const t = $("#toast"); t.textContent = msg; t.classList.toggle("bad", !!bad); t.classList.add("show");
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), bad ? 9000 : 5000);
 }
+const SWAP_CONFIRM_MIN = 5;   // swap 뒤 보드 반영을 기다리며 버튼을 숨기는 최대 시간(분)
 function undoOpen(sw, name) { const u = sw?.undo?.[name]; return !!u && new Date(u.until) > Date.now(); }
 // 방금 끝난 swap 이 아직 보드(수집 결과)에 안 보이면 그 기록. 웹 swap 은 브라우저 기록, 서버 swap 은 status.swap.last.
 // Azure 활동 기록이 몇 분 늦게 올라와서, 그동안 보드는 swap 전 상태(나갈 커밋 등)를 보여 준다 — 그때 다시 누르면 되돌리기가 된다.
@@ -333,14 +334,20 @@ function updateSwapCtl(st) {
     const r = STATE?.repos?.find(x => x.name === el.dataset.repo);
     if (!r || !sw?.enabled) { el.innerHTML = ""; return; }
     if (sw.job?.repo === r.name) { el.innerHTML = `<span class="swapbusy"><span class="spin"></span> ${sw.job.action === "undo" ? "되돌리는 중" : "swap 중"}…</span>`; return; }
+    // swap 은 끝났지만 보드에 아직 안 보이면 버튼 대신 「확인 중」만 보인다(확인되면 swap·되돌리기 버튼이 나온다).
+    // 되돌리기는 비상 복구라, 확인이 SWAP_CONFIRM_MIN 분 넘게 늦으면 기다리지 않고 버튼을 다시 보여 준다.
+    const pend = swapPending(r, sw);
+    if (pend && Date.now() - new Date(pend.finished_at) < SWAP_CONFIRM_MIN * 60000) {
+      el.innerHTML = `<span class="swapbusy" title="${esc(`${fmt(pend.finished_at)} 에 ${pend.action === "undo" ? "되돌리기" : "swap"} 완료. 수집 PC 가 swap 을 감지해 이 카드에 반영되면 버튼이 다시 나옵니다(보통 1~2분, ${SWAP_CONFIRM_MIN}분이 넘으면 확인 전이라도 나옴).`)}"><span class="spin"></span> ${pend.action === "undo" ? "되돌리기" : "swap"} 확인 중…</span>`;
+      return;
+    }
     const why = swapBlock(r, sw, "swap");
     let html = `<span title="${esc(why || "staging → production swap (확인 창이 먼저 뜹니다)")}"><button data-act="swap" ${why ? "disabled" : ""}>swap</button></span>`;
     if (undoOpen(sw, r.name)) {
       const u = sw.undo[r.name], uw = swapBlock(r, sw, "undo");
       html += `<span title="${esc(uw || `이 ${sw.web ? "브라우저" : "보드"}에서 ${fmt(u.at)} 에 한 swap 을 되돌림(${fmt(u.until)} 까지)`)}"><button class="undo" data-act="undo" ${uw ? "disabled" : ""}>되돌리기</button></span>`;
     }
-    const pend = swapPending(r, sw);
-    if (pend) html += `<span class="swapwait" title="${esc(`${fmt(pend.finished_at)} 에 ${pend.action === "undo" ? "되돌리기" : "swap"} 완료. 수집 PC 가 swap 을 감지해 다시 수집할 때까지 이 카드는 swap 전 상태를 보여 줍니다.`)}">보드 반영 대기 중(보통 1~2분)</span>`;
+    if (pend) html += `<span class="swapwait" title="${esc(`${fmt(pend.finished_at)} 에 ${pend.action === "undo" ? "되돌리기" : "swap"} 완료. ${SWAP_CONFIRM_MIN}분이 지나도 보드에 반영되지 않았습니다. 수집 PC 가 swap 을 감지해 다시 수집할 때까지 이 카드는 swap 전 상태를 보여 줍니다.`)}">보드 반영 지연 — 확인 전</span>`;
     el.innerHTML = html;
     el.querySelectorAll("button").forEach(b => b.onclick = () => openSwap(r.name, b.dataset.act));
   });

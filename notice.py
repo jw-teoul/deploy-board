@@ -25,7 +25,9 @@ def clean_title(title, key=None):
     """제목 앞의 이슈 키·대괄호를 떼어 낸다(키는 따로 보여 주므로)."""
     t = (title or "").strip().splitlines()[0] if title else ""
     if key:
-        t = re.sub(rf"^\s*\[?{re.escape(key)}\]?\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+        # 뒤에 이어 붙인 키 목록(·3091·3088, , PILLDOC-2)까지 뗀다 — 구분 기호가 있을 때만
+        more = r"(?:\s*[·,/&+]\s*(?:[A-Z][A-Z0-9]*-)?\d+)*"
+        t = re.sub(rf"^\s*\[?{re.escape(key)}{more}\]?\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
     return t.strip() or "(제목 없음)"
 
 
