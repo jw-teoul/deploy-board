@@ -10,6 +10,9 @@
     {"name": "pilldocsite", "app": "PilldocSiteNew-Prod", "workflow": "deploy.yml", "label": "PillDoc Site", "url": "https://www.pilldoc.co.kr"},
     {"name": "agentapiv2",  "app": "agentapi2",           "workflow": "deploy.yml", "label": "Agent API v2", "url": "https://agentapi2.pilldoc.co.kr"},
     {"name": "adpssite",    "app": "AdpsSiteLinux-Prod",  "workflow": "ci.yml",     "label": "ADPS Site",    "url": "https://www.adps.co.kr"},
+    {"name": "agentapiservice",    "app": "PilldocApiNew-Prod",  "workflow": "deploy.yml", "label": "PillDoc API",    "url": "https://api.pilldoc.co.kr"},
+    {"name": "teoulwebconsoleapi", "app": "webconsole-api-prod", "workflow": "deploy.yml", "label": "WebConsole API", "url": "https://webconsole-api.edbintra.co.kr"},
+    {"name": "adpsapi",            "app": "ADPSApiProdLinux",    "workflow": "ci.yml",     "label": "ADPS API",       "url": "https://api.adps.co.kr", "develop_branch": "development"},
     {"name": "pillcheckver2frontend", "staging_branch": "deploy/dev", "prod_branch": "deploy/prod", "workflow": "ci.yml", "label": "PillCheck",
      "hosts": {"staging": "staging.pillchk.com", "prod": "www.pillcheck.co.kr"}}
   ]

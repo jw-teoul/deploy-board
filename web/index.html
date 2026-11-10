@@ -179,13 +179,13 @@
           <li><b>Azure swap</b> — App Service 활동 기록 최근 90일에서 <code>slotsswap</code> 성공 이벤트(시각·실행자). 사람과 자동 처리기가 같은 swap 에 둘 다 남기므로 3분 안의 것은 하나로 합치고 사람 쪽을 남깁니다.</li>
           <li><b>이슈 키</b> — 브랜치 이름·PR 제목·커밋 메시지에서 <code>PILLDOC-/PHAI-/MOBILE-/PA2-/PI-숫자</code> 꼴만 뽑습니다. 키가 없는 커밋·브랜치는 어느 이슈에도 안 붙어 화면에 없습니다. Jira 자체는 읽지 않고 링크만 겁니다.</li>
         </ol>
-        <p class="small mute">레포 두 종류 — <b>swap 모드</b>(adminsite·pilldocsite·agentapiv2·adpssite): <code>deploy/prod</code> 머지 → Actions 가 staging 슬롯에 올림 → 사람이 swap. <b>브랜치 모드</b>(pillcheckver2frontend, Vercel): <code>deploy/dev</code> 머지가 스테이징, <code>deploy/prod</code> 머지가 곧 운영 배포라 swap 이 없습니다.</p>
+        <p class="small mute">레포 두 종류 — <b>swap 모드</b>(adminsite·pilldocsite·agentapiv2·adpssite·agentapiservice·teoulwebconsoleapi·adpsapi): <code>deploy/prod</code> 머지 → Actions 가 staging 슬롯에 올림 → 사람이 swap. <b>브랜치 모드</b>(pillcheckver2frontend, Vercel): <code>deploy/dev</code> 머지가 스테이징, <code>deploy/prod</code> 머지가 곧 운영 배포라 swap 이 없습니다.</p>
         <h4>갱신</h4>
         <ul>
           <li>서버가 30초마다 레포 변경(브랜치 끝 커밋·최근 PR 갱신 시각·브랜치 모드는 배포 run 상태)을, 2분마다 Azure swap 을 가볍게 확인해 바뀐 레포만 다시 수집합니다. 이 화면은 10초마다 결과를 받아 자동 반영하고, 단계가 바뀐 캐릭터가 걸어갑니다. 「새로고침」은 전체 즉시 재수집(약 1~2분).</li>
           <li>웹훅(GitHub·Azure 가 바로 알려 주는 방식)은 외부에서 접근되는 주소가 필요해 지금은 쓸 수 없습니다.</li>
         </ul>
-        <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 · adpssite · pillcheckver2frontend. 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다.</p>
+        <p class="small mute">대상 레포: adminsite · pilldocsite · agentapiv2 · adpssite · agentapiservice · teoulwebconsoleapi · adpsapi · pillcheckver2frontend. 필독에이전트 v2(TMA S3 릴리스)는 아직 없습니다.</p>
       </div>
       <div>
         <h4>단계를 정하는 기준</h4>
@@ -594,7 +594,7 @@ function renderRepo(r) {
       <span style="flex:1"></span><span class="small mute">${r.errors?.length ? "⚠ " + esc(r.errors.join(" / ")) : ""}${r.notes?.length ? " · " + esc(r.notes.join(" / ")) : ""} ${r.duration_s ?? ""}초</span>
       <span class="order"><button data-mv="-1" title="위로">▲</button><button data-mv="1" title="아래로">▼</button></span></div>
     ${folded ? "" : `<div class="envs">
-      ${envBox("develop", r.develop, `→ ${esc(r.staging_branch||"deploy/prod")}: ${devOnlyText}`)}
+      ${envBox(r.develop_branch && r.develop_branch !== "develop" ? `develop (${esc(r.develop_branch)})` : "develop", r.develop, `→ ${esc(r.staging_branch||"deploy/prod")}: ${devOnlyText}`)}
       ${envBox(`스테이징 (${esc(r.staging_branch||"deploy/prod")})`, r.staging, `→ 운영: ${stOnlyText}`)}
       ${r.mode === "branch"
         ? envBox(`운영 (${esc(r.prod_branch)})`, r.prod, r.prod?.sha ? "운영 브랜치 마지막 성공 배포 run (머지 = 배포)" : "성공 배포 run 없음")

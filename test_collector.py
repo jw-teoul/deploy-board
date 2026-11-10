@@ -66,6 +66,11 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(i["stage"], "staging")
         self.assertTrue(any("추가 커밋" in f for f in i["flags"]))
 
+    def test_develop_branch_name_from_config(self):
+        """adpsapi 처럼 통합 브랜치가 development 인 레포: 그 브랜치 머지가 develop 단계."""
+        r = repo(develop_branch="development", prs=[pr(1, "development", "MERGED", "PILLDOC-8", merge="m8")])
+        self.assertEqual(self.judge(r)["PILLDOC-8"]["stage"], "develop")
+
     def test_commit_only_in_develop(self):
         r = repo(develop_only={"commits": [commit("c7", "PILLDOC-7")]})
         self.assertEqual(self.judge(r)["PILLDOC-7"]["stage"], "develop")

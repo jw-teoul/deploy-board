@@ -328,9 +328,10 @@ class Collector:
     def collect_repo(self, rc):
         name, app = rc["name"], rc.get("app")
         stg, prd = rc.get("staging_branch", "deploy/prod"), rc.get("prod_branch")
+        dev = rc.get("develop_branch", "develop")   # 통합 브랜치(adpsapi 는 development)
         t0 = time.time()
         r = {"name": name, "label": rc.get("label", name), "app": app, "url": rc.get("url"), "errors": [], "notes": [],
-             "staging_branch": stg, "prod_branch": prd, "mode": "swap" if app else ("branch" if prd else "none"),
+             "staging_branch": stg, "prod_branch": prd, "develop_branch": dev, "mode": "swap" if app else ("branch" if prd else "none"),
              "web": f"https://github.com/{self.org}/{name}"}
         g = Repo(self.local_path(rc), self.org, name)
         try:
@@ -344,9 +345,9 @@ class Collector:
             return r
         try:
             g.fetch()
-            r["develop"] = g.head("origin/develop")
+            r["develop"] = g.head(f"origin/{dev}")
             r["staging"] = g.head(f"origin/{stg}")
-            r["develop_only"] = g.only_in(f"origin/{stg}", "origin/develop", self.keys_of)
+            r["develop_only"] = g.only_in(f"origin/{stg}", f"origin/{dev}", self.keys_of)
             r["branches"] = [b for b in g.branches(self.keys_of) if b["keys"]]
         except Exception as e:
             r["errors"].append(f"git 수집 실패 — {e}")
@@ -432,7 +433,7 @@ class Collector:
                 if p["state"] == "OPEN":
                     i["stages"].add("pr")
                 elif p["state"] == "MERGED":
-                    if p["baseRefName"] == "develop":
+                    if p["baseRefName"] == r.get("develop_branch", "develop"):
                         i["stages"].add("develop")
                     elif p["baseRefName"] in (stg, prd):
                         i["stages"].add("staging")

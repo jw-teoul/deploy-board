@@ -111,12 +111,12 @@ ssh datacrawler 'systemctl --user status deploy-board'      # 끄기: systemctl 
 웹훅(GitHub push/PR, Azure Event Grid 의 swap 이벤트)을 쓰면 폴링 없이 즉시 반영되지만, GitHub·Azure 가 호출할 수 있는 **외부 접근 주소가 필요해 지금은 안 된다**(로컬 PC·사내 개발 서버 모두 밖에서 못 들어온다). 나중에 중계(터널·공개 엔드포인트)가 생기면 그 훅이 `POST /api/refresh` 에 `{"repos":["<레포>"]}` 를 보내면 된다 — 엔드포인트는 이미 있다.
 
 ## 설정 `repos.json`
-`repos[]` 한 항목이 레포 하나. 공통: `name`(GitHub 레포)·`workflow`(배포 워크플로 파일)·`label`·선택 `local`(클론 경로, 기본 `../projects/<name>` — 없으면 `gh repo clone` 으로 받고, 단일 브랜치 클론이면 fetch refspec 을 전체 브랜치로 넓힌다). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지). 선택 `url`(운영 사이트 주소)은 Slack 예고 꼬리말과 결과 글의 「확인:」 줄에 들어간다. Slack 봇이 보낼 때는 `issue_key_pattern` 에 맞는 키를 `jira_base` + 키 링크로 바꾼다(복사용 문구는 글자 그대로).
+`repos[]` 한 항목이 레포 하나. 공통: `name`(GitHub 레포)·`workflow`(배포 워크플로 파일)·`label`·선택 `local`(클론 경로, 기본 `../projects/<name>` — 없으면 `gh repo clone` 으로 받고, 단일 브랜치 클론이면 fetch refspec 을 전체 브랜치로 넓힌다). `issue_key_pattern` 으로 이슈 키 접두어를 제한한다(제목 속 `AC-35` 같은 오인 방지). 선택 `develop_branch`(통합 브랜치, 기본 `develop` — adpsapi 는 `development`)는 develop 칸과 「develop 에만 있는 커밋」·develop 단계 판정에 쓴다. 선택 `url`(운영 사이트 주소)은 Slack 예고 꼬리말과 결과 글의 「확인:」 줄에 들어간다. Slack 봇이 보낼 때는 `issue_key_pattern` 에 맞는 키를 `jira_base` + 키 링크로 바꾼다(복사용 문구는 글자 그대로).
 
 배포 방식에 따라 두 모드 중 하나:
 | 모드 | 키 | 스테이징 | 운영 | 예 |
 |---|---|---|---|---|
-| swap | `app`(Azure App Service 이름) | `deploy/prod` HEAD(= staging 슬롯) | 배포·swap 순서 추적으로 구한 SHA(추정) | adminsite·pilldocsite·agentapiv2·adpssite |
+| swap | `app`(Azure App Service 이름) | `deploy/prod` HEAD(= staging 슬롯) | 배포·swap 순서 추적으로 구한 SHA(추정) | adminsite·pilldocsite·agentapiv2·adpssite·agentapiservice·teoulwebconsoleapi·adpsapi |
 | 브랜치 | `staging_branch`·`prod_branch`·선택 `hosts{staging,prod}` | 스테이징 브랜치 HEAD | 운영 브랜치의 마지막 성공 배포 run 의 SHA(머지가 곧 배포, swap 없음) | pillcheckver2frontend(Vercel: `deploy/dev`→staging.pillchk.com, `deploy/prod`→www.pillcheck.co.kr) |
 
 브랜치 모드에서는 변경 감시가 운영 브랜치의 마지막 run 상태도 함께 본다(배포 run 이 끝나야 운영이 바뀌므로). 화면의 레포 순서는 제목 옆 ▲▼ 로 바꾸며 브라우저(localStorage)에 기억된다 — `repos.json` 순서는 기본값일 뿐이다.
