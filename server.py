@@ -39,10 +39,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, "web")
 STATE = os.path.join(HERE, "data", "state.json")
 SWAP_LOG = os.path.join(HERE, "data", "swap-log.jsonl")
+SETTINGS = os.path.join(HERE, "data", "board-settings.json")   # 헤더에서 바꾸는 이 PC 보드 설정(지금은 「swap 시 Slack 알림」 하나)
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 # 실행 방법(main 에서 정함). readonly 와 swap 은 함께 켜질 수 없다.
-OPT = {"readonly": False, "swap": None, "publish": None, "token": None, "port": None, "slack": None}
+OPT = {"readonly": False, "swap": None, "publish": None, "token": None, "port": None, "slack": None, "slack_on_swap": True}
 
 # ---------- 정적 파일 버전(캐시 무효화) ----------
 # index.html 을 내보낼 때 pixel.js 주소에 내용 해시(?v=)를 붙이고, 그림 파일 묶음의 해시를 data-assets 로 넘긴다.
@@ -225,6 +226,29 @@ def sync_collected_at():
             pass   # 바꿔 끼우는 순간이면 다음에 다시
 
 
+def load_settings():
+    """이 PC 보드 설정. 파일이 없거나 깨졌으면 기본값(swap 시 Slack 알림 켜짐)."""
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            v = json.load(f)
+    except (OSError, ValueError):
+        v = {}
+    return {"slack_on_swap": v.get("slack_on_swap") is not False}
+
+
+def save_settings(values):
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    tmp = SETTINGS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(values, f, ensure_ascii=False)
+    os.replace(tmp, SETTINGS)
+
+
+def show_slack():
+    """헤더에 보여 줄 Slack 상태 — 채널·켜짐 여부와 「swap 시 알림」 설정(토큰 없음)."""
+    status["slack"] = dict(slack.public(OPT["slack"], status.get("slack", {}).get("reason")), on_swap=OPT["slack_on_swap"])
+
+
 def slack_result(done):
     """swap·되돌리기가 끝나면 예고 글의 스레드에 결과를 단다(예고를 보낸 swap 만). → swap-log 의 slack 칸."""
     th = (done.get("info") or {}).get("slack")
@@ -245,11 +269,13 @@ def slack_preview(repo, action, info, req):
         if u.get("slack") and OPT["slack"]:
             info["slack"] = dict(u["slack"])
         return None
-    if not req:
+    if not OPT["slack_on_swap"] or (isinstance(req, dict) and req.get("skip")):   # 헤더 설정 꺼짐, 또는 예고를 이미 보낸 swap 의 재시도
         return None
     if not OPT["slack"]:
-        return "Slack 이 꺼져 있음(환경 변수 없음) — 체크를 끄고 다시 누름"
+        return None if not req else "Slack 이 꺼져 있음(환경 변수 없음) — 헤더의 「swap 시 Slack 알림」을 끄고 다시 누름"
     text = (req.get("text") or "").strip() if isinstance(req, dict) else ""
+    if not req:   # 화면이 문구를 안 보냈으면(창을 열기 전에 켬 등) 서버 스냅숏으로 예고를 만든다
+        text = notice.preview_text((info or {}).get("snapshot") or {"known": False})[0] or ""
     if not text:
         return "Slack 예고 문구가 비어 있음"
     if len(slack.escape(text)) > slack.MAX_TEXT:
@@ -569,6 +595,17 @@ class Handler(SimpleHTTPRequestHandler):
             sent, ts, err = slack.post(OPT["slack"], text)
             print(f"Slack 알림 문구 보냄 repo={body.get('repo')} sent={sent} {err or ''}", file=sys.stderr)
             return self._json({"sent": sent, "ts": ts, "channel": OPT["slack"]["channel"], "error": err}, 200 if sent else 502)
+        if path == "/api/settings":   # 헤더의 「swap 시 Slack 알림」 체크
+            bad = self._swap_guard() if OPT["token"] else "swap 이 꺼진 서버(--allow-swap 으로 이 PC 에서만 켬)"
+            if bad:
+                return self._json({"error": bad}, 403)
+            v = self._body().get("slack_on_swap")
+            if not isinstance(v, bool):
+                return self._json({"error": "slack_on_swap 은 true/false"}, 400)
+            OPT["slack_on_swap"] = v
+            save_settings({"slack_on_swap": v})
+            show_slack()
+            return self._json({"ok": True, "status": status})
         if path == "/api/recheck":
             if not OPT["swap"]:
                 return self._json({"error": "swap 이 꺼진 서버"}, 403)
@@ -627,6 +664,8 @@ def main():
         for k in ("DEPLOY_BOARD_SLACK_TOKEN", "DEPLOY_BOARD_SLACK_CHANNEL", "DEPLOY_BOARD_SLACK_API", "DEPLOY_BOARD_SLACK_APP_TOKEN"):
             os.environ.pop(k, None)   # az·gh·git 같은 자식 프로세스가 봇 토큰을 물려받지 않게
         status["slack"] = slack.public(OPT["slack"], why)
+        OPT["slack_on_swap"] = load_settings()["slack_on_swap"]
+        show_slack()
         OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap, notify=slack_result)
         status["mode"] = "swap"
         status["swap"] = OPT["swap"].status

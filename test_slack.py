@@ -197,7 +197,7 @@ class SwapBase(unittest.TestCase):
         os.environ["DEPLOY_BOARD_SWAP_CMD"] = f'"{sys.executable}" -c "import sys; sys.exit({rc})"'
 
     def snap(self):
-        return {"label": "필독 사이트", "commits": 1, "known": True, "nokey": [],
+        return {"label": "필독 사이트", "app": "App-Prod", "commits": 1, "known": True, "nokey": [],
                 "items": [{"key": "PILLDOC-1", "title": "약국 검색", "kind": "추가"}]}
 
     def run_swap(self, action="swap", req=None, rc=0):
@@ -272,11 +272,24 @@ class SwapFlow(SwapBase):
         self.assertEqual(len(self.fake.calls), 2)   # 다시 보내지 않는다
         self.assertIn("pilldocsite", self.runner.status["undo"])
 
-    def test_unchecked_sends_nothing(self):
-        _, done = self.run_swap(req=None)
+    def test_setting_off_sends_nothing(self):   # 헤더 「swap 시 Slack 알림」 꺼짐 — 화면이 문구를 보내도 안 보낸다
+        server.OPT["slack_on_swap"] = False
+        _, done = self.run_swap(req={"text": "예고"})
         self.assertTrue(done["ok"])
         self.assertEqual(self.fake.calls, [])
         self.assertNotIn("slack", done)
+
+    def test_skip_after_preview_already_sent(self):   # 예고 뒤 시작 못 한 swap 을 다시 누름 — 예고를 두 번 보내지 않는다
+        _, done = self.run_swap(req={"skip": True})
+        self.assertTrue(done["ok"])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_setting_on_without_text_uses_preview(self):   # 켜짐인데 화면 문구가 없으면 스냅숏으로 예고를 만든다
+        server.OPT["slack_on_swap"] = True
+        _, done = self.run_swap(req=None)
+        self.assertTrue(done["ok"])
+        self.assertIn("필독 사이트 운영 swap 시작", self.fake.calls[0]["body"]["text"])
+        self.assertEqual(self.fake.calls[1]["body"]["thread_ts"], done["info"]["slack"]["ts"])
 
     def test_slack_off_rejects_checked(self):
         server.OPT["slack"] = None
@@ -387,6 +400,31 @@ class Endpoint(SwapBase):
         code, j = self.post({"repo": "pilldocsite", "text": "x"})
         self.assertEqual(code, 502)
         self.assertFalse(j["sent"])
+
+    def test_setting_saved(self):
+        import urllib.error
+        import urllib.request
+        self.addCleanup(setattr, server, "SETTINGS", server.SETTINGS)
+        server.SETTINGS = os.path.join(self.tmp.name, "board-settings.json")
+
+        def put(v, token="board-token"):
+            req = urllib.request.Request("http://127.0.0.1:%d/api/settings" % server.OPT["port"], method="POST",
+                                         data=json.dumps({"slack_on_swap": v}).encode(),
+                                         headers={"Content-Type": "application/json", "X-Board-Token": token})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+        self.assertEqual(put(False, token="bad")[0], 403)
+        code, j = put(False)
+        self.assertEqual(code, 200, j)
+        self.assertFalse(server.OPT["slack_on_swap"])
+        self.assertFalse(j["status"]["slack"]["on_swap"])
+        self.assertFalse(server.load_settings()["slack_on_swap"])   # 파일에 남아 다시 띄워도 유지
+        self.assertEqual(put("yes")[0], 400)
+        put(True)
+        self.assertTrue(server.load_settings()["slack_on_swap"])
 
     def test_start_fails_after_preview(self):
         self.runner.start = lambda repo, action, info: (False, "이미 진행 중")   # can_start 뒤 경합

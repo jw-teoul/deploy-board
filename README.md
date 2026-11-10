@@ -63,8 +63,9 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
   - 레포 폴더의 `.env`(git 에 안 올라감)에 `KEY=값` 으로 적어도 된다. 시작할 때 `DEPLOY_BOARD_` 로 시작하는 키만 읽고, 같은 이름의 환경 변수가 있으면 그쪽이 먼저다. 읽은 키 이름(값 아님)을 콘솔에 찍는다. `DEPLOY_BOARD_SLACK_APP_TOKEN`(xapp-)은 지금 쓰지 않는다.
   - PowerShell 예: `[Environment]::SetEnvironmentVariable("DEPLOY_BOARD_SLACK_TOKEN", "xoxb-…", "User")` 뒤 새 터미널에서 실행.
 - 토큰은 repos.json·git·notes·공유 서버에 두지 않는다. 화면·`/api/status`·swap-log·state.json 에도 나가지 않는다(채널 ID 만 보임). 공유 서버(`--readonly`)와 웹 로그인 swap 에서는 보내지 않는다.
-- 흐름: swap 확인 창(카드의 swap 버튼 → 「운영에 나갈 커밋」 목록 아래)에 「Slack 에 알리기」 체크(기본 켜짐 — 알리지 않으려면 끈다)와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면
-  1. swap 을 시작할 수 있는지(권한·진행 중인 swap) 먼저 보고, 예고 글을 채널에 보낸다. **보내지 못하면 swap 하지 않는다**(체크를 끄고 다시 누르면 swap 만).
+- 켜고 끄기: 화면 맨 위 헤더의 「swap 시 Slack 알림 · C…」 체크(기본 켜짐). 이 PC 보드 설정 `data/board-settings.json` 에 저장돼 새로고침·재시작 뒤에도 유지된다(API `POST /api/settings`).
+- 흐름: 켜져 있으면 swap 확인 창(카드의 swap 버튼 → 「운영에 나갈 커밋」 목록 아래)에 「Slack 알림 켜짐」과 예고 문구(고칠 수 있음)가 나오고, 꺼져 있으면 「Slack 알림 꺼짐」 한 줄만 나온다와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면
+  1. swap 을 시작할 수 있는지(권한·진행 중인 swap) 먼저 보고, 예고 글을 채널에 보낸다. **보내지 못하면 swap 하지 않는다**(헤더 체크를 끄고 다시 누르면 swap 만).
   2. swap 이 끝나면 결과(완료·실패) 문구를 예고 글의 스레드에 단다. 30분 안의 되돌리기 결과도 같은 스레드에 단다.
   3. 스레드 전송이 실패해도 swap 결과는 그대로이고, 토스트로 알린다. 중복 글을 막으려고 다시 보내지 않는다 — 「알림 문구」에서 복사해 붙여 넣거나 「Slack 으로 보내기」로 보낸다.
 - swap-log 기록의 `info.slack`·`slack` 에 채널·글 ts·결과 전송 여부가 남는다. 코드 `slack.py`, 시험 `test_slack.py`(가짜 Slack API, 실제 전송 없음). 시험 때는 `DEPLOY_BOARD_SLACK_API` 로 API 주소를 가짜 서버로 바꾼다.
