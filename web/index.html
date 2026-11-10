@@ -220,9 +220,10 @@
   <div class="actions"><button id="swapCancel">취소 (Esc)</button><button id="swapOk" class="danger" disabled>실행</button></div>
 </dialog>
 <dialog id="noticeDlg"><h3 id="noticeTitle">배포 알림 문구</h3>
-  <div class="small mute">Slack 에 붙여 넣을 문구 초안입니다. 보드는 아무 데도 보내지 않습니다. 고쳐서 복사해도 됩니다.</div>
+  <div class="small mute" id="noticeHelp">Slack 에 붙여 넣을 문구 초안입니다. 고쳐서 복사해도 됩니다.</div>
   <h4>예고 — swap 하면 운영에 나갈 것 <button data-copy="noticePre">복사</button></h4><div id="noticePreBox"></div>
-  <h4>결과 — 마지막 swap 으로 나간 것 <button data-copy="noticeRes">복사</button></h4><div id="noticeResBox"></div>
+  <h4>결과 — 마지막 swap 으로 나간 것 <button data-copy="noticeRes">복사</button> <button id="noticeSend" hidden>Slack 으로 보내기</button></h4>
+  <div class="small mute" id="noticeResNote"></div><div id="noticeResBox"></div>
   <div class="actions"><button id="noticeClose">닫기 (Esc)</button></div>
 </dialog>
 <div id="toast" role="status"></div>
@@ -366,9 +367,9 @@ function openSwap(repo, act) {
     ${undo ? `<div class="row">운영과 스테이징 슬롯을 다시 맞바꿉니다. 방금 나간 커밋이 운영에서 빠지고 이전 운영이 돌아옵니다.</div>`
            : `<div class="row">운영에 나갈 커밋 ${so.length}개 · 이슈 ${keys.length ? keys.map(jira).join(", ") : "없음"}</div>
               <ul>${so.map(c => `<li><code>${short(c.sha)}</code> ${esc(c.message)} <span class="mute">${esc(c.author)} ${fmt(c.date)}</span></li>`).join("")}</ul>`}
-    ${!web && !undo && LAST_ST?.slack?.enabled ? `<div class="slackbox"><label><input type="checkbox" id="slackOn"> Slack 에 알리기 — 채널 <code>${esc(LAST_ST.slack.channel)}</code></label>
+    ${!web && !undo && LAST_ST?.slack?.enabled ? `<div class="slackbox"><label><input type="checkbox" id="slackOn" checked> Slack 에 알리기 — 채널 <code>${esc(LAST_ST.slack.channel)}</code></label>
       <div class="small mute">체크하고 실행하면 아래 예고를 먼저 보내고(보내지 못하면 swap 하지 않음), 끝나면 결과를 그 글의 스레드에 답니다. 되돌리기 결과도 같은 스레드에 달립니다.</div>
-      <textarea id="slackText" spellcheck="false" disabled placeholder="예고 문구 불러오는 중…"></textarea></div>` : ""}
+      <textarea id="slackText" spellcheck="false" placeholder="예고 문구 불러오는 중…"></textarea></div>` : ""}
     ${!web && undo && sw?.undo?.[repo]?.slack ? `<div class="row small">되돌리기 결과를 Slack 예고 글의 스레드에 답니다.</div>` : ""}
     <div class="row small mute">${web ? `실행 요청(${esc(WEBLOGIN.account?.username || "")} 의 Microsoft 로그인 권한으로 이 브라우저가 보냄, Azure 활동 기록에 그 이름으로 남음)`
                                        : "실행 명령(내 az 로그인으로 실행, Azure 활동 기록에 내 이름으로 남음)"}</div><code class="cmd">${esc(cmd)}</code>`;
@@ -458,7 +459,8 @@ $("#recheck").onclick = async () => {
   } catch (e) { toast("요청 실패 — " + e, true); }
 };
 
-// ---------- 배포 알림 문구(복사용 초안 — 보내지 않음) ----------
+// ---------- 배포 알림 문구(복사용 초안 + 이 PC 보드에서는 결과를 Slack 으로 보내기) ----------
+const canSend = () => !!(TOKEN && LAST_ST?.swap?.enabled && LAST_ST?.slack?.enabled);
 async function openNotice(repo) {
   let j;
   try { const res = await fetch("/api/notice?repo=" + encodeURIComponent(repo), {cache:"no-store"}); j = await res.json(); if (!res.ok) throw new Error(j.error || res.status); }
@@ -468,8 +470,27 @@ async function openNotice(repo) {
   $("#noticePreBox").innerHTML = box("noticePre", j.preview, j.preview_why);
   $("#noticeResBox").innerHTML = box("noticeRes", j.result, j.result_why);
   document.querySelectorAll("#noticeDlg [data-copy]").forEach(b => { b.disabled = !$("#" + b.dataset.copy)?.matches("textarea"); });
+  $("#noticeResNote").textContent = j.result_note || "";
+  const send = $("#noticeSend");
+  send.hidden = !canSend(); send.disabled = !j.result; send.textContent = "Slack 으로 보내기"; send.dataset.repo = repo;
+  $("#noticeHelp").textContent = canSend()
+    ? `Slack 에 보낼 문구 초안입니다. 고쳐서 복사하거나, 결과는 「Slack 으로 보내기」로 채널 ${LAST_ST.slack.channel} 에 새 글로 보낼 수 있습니다(확인 창이 먼저 뜹니다).`
+    : "Slack 에 붙여 넣을 문구 초안입니다. 이 화면에서는 보내지 않습니다. 고쳐서 복사해도 됩니다.";
   $("#noticeDlg").showModal();
 }
+$("#noticeSend").onclick = async () => {
+  const b = $("#noticeSend"), text = $("#noticeRes")?.value?.trim();
+  if (!text) { toast("보낼 문구가 비어 있습니다", true); return; }
+  if (!confirm(`Slack 채널 ${LAST_ST.slack.channel} 에 아래 문구를 새 글로 보냅니다.\n\n${text}`)) return;
+  b.disabled = true; b.textContent = "보내는 중…";
+  try {
+    const res = await fetch("/api/slack", {method:"POST", headers:{"Content-Type":"application/json", "X-Board-Token":TOKEN},
+                                           body: JSON.stringify({repo: b.dataset.repo, text})});
+    const j = await res.json();
+    if (!res.ok || !j.sent) throw new Error(j.error || res.status);
+    b.textContent = "보냄"; toast(`Slack 채널 ${j.channel} 에 보냈습니다`);
+  } catch (e) { b.disabled = false; b.textContent = "Slack 으로 보내기"; toast("Slack 전송 실패 — " + e.message, true); }
+};
 document.querySelectorAll("#noticeDlg [data-copy]").forEach(b => b.onclick = async () => {
   const ta = $("#" + b.dataset.copy);
   try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); document.execCommand("copy"); }

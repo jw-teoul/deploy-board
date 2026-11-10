@@ -1,7 +1,8 @@
-"""배포 알림 문구(Slack mrkdwn) — 보드는 어디에도 보내지 않고 복사할 문구만 만든다.
+"""배포 알림 문구(Slack mrkdwn) — 문구만 만든다. 보내기는 server(swap 예고·결과, 「알림 문구」 창의 보내기 버튼)가 한다.
 
 - 예고: 지금 스테이징에만 있는 커밋(= swap 하면 운영에 나갈 것)을 이슈 키별로 묶는다.
 - 결과: swap 할 때 swap-log 에 남긴 스냅숏(그 순간 나간 것)으로 「반영됨」 문구를 만든다.
+  보드 밖(Portal) swap 은 수집한 swap 기록과 운영 배포 run 제목으로 초안을 만든다(outside_swap).
 제목은 Jira 를 읽지 않으므로 PR 제목 → 커밋 첫 줄 순서로 쓴다(collector.judge_issues 의 title).
 사내 글 형식: 첫 줄 결론, Slack 300자·8줄 안, `*굵게*`·`•` 한 줄 불릿, 표·`**` 없음.
 """
@@ -128,10 +129,8 @@ def preview_text(snap):
 
 
 def kst(iso):
-    try:
-        return dt.datetime.fromisoformat(iso).astimezone(KST).strftime("%m-%d %H:%M")
-    except Exception:
-        return iso or "?"
+    t = _iso(iso)
+    return t.astimezone(KST).strftime("%m-%d %H:%M") if t else (iso or "?")
 
 
 def result_text(rec):
@@ -152,6 +151,42 @@ def result_text(rec):
     if "items" not in snap:
         return None, "이 swap 기록에는 나간 커밋 목록이 없음(알림 문구 기능 전 기록)"
     return _fit([f"*{label} 운영 swap 완료 ({when})*"] + check, _bullets(_rows(snap))), None
+
+
+KEY_RX = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+SAME_SWAP_S = 300   # 보드가 한 swap 도 Azure 활동 기록에 남는다 — 보드 기록보다 이만큼 넘게 늦어야 다른 swap
+
+
+def _iso(s):
+    """ISO 시각 → aware datetime. Azure 의 7자리 소수·Z 도 받는다."""
+    s = re.sub(r"(\.\d{6})\d+", r"\1", (s or "").replace("Z", "+00:00"))
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def outside_swap(repo, rec):
+    """보드 밖(Azure Portal 등)에서 한 swap 의 결과 초안 → {text, at, note} 또는 None(보드 기록이 최신·swap 기록 없음).
+    나간 커밋 목록은 모르므로 운영 SHA 를 배포한 run 의 제목으로 불릿을 만들고, 사람이 고쳐 보내게 한다."""
+    swaps = repo.get("swaps") or []
+    if not swaps:
+        return None
+    last = swaps[0]
+    at, board = _iso(last.get("time")), _iso((rec or {}).get("finished_at"))
+    if board and at and (at - board).total_seconds() <= SAME_SWAP_S:
+        return None
+    sha = (repo.get("prod") or {}).get("sha")
+    run = next((x for x in repo.get("runs") or [] if sha and x.get("headSha") == sha), None)
+    commits = [{"sha": sha, "message": run.get("displayTitle"), "keys": sorted(set(KEY_RX.findall(run.get("displayTitle") or "")))}] if run else []
+    snap = snapshot(dict(repo, staging_only={"commits": commits}))
+    label = snap["label"]
+    check = [f"확인: {snap['url']}"] if snap.get("url") else []
+    text = _fit([f"*{label} 운영 swap 완료 ({kst(last.get('time'))})*"] + check, _bullets(_rows(snap)))
+    note = "보드 밖(Azure Portal 등)에서 한 swap — " + ("나간 커밋 목록은 보드가 모름, 운영 배포 run 제목으로 만든 초안이라 고쳐서 보내세요"
+                                                   if run else "나간 커밋을 찾지 못함, 직접 채워서 보내세요")
+    return {"text": text, "at": last.get("time"), "note": note}
 
 
 def last_record(log_path, repo):

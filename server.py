@@ -311,11 +311,15 @@ def notice_for(name):
     pre, pre_why = notice.preview_text(snap)
     rec = None if OPT["readonly"] else notice.last_record(SWAP_LOG, name)
     res, res_why = notice.result_text(rec)
+    res_at, res_note = (rec or {}).get("finished_at"), None
+    out = notice.outside_swap(r, rec)   # 마지막 swap 이 보드 밖(Portal 등)에서 한 것이면 그 초안
+    if out:
+        res, res_why, res_at, res_note = out["text"], None, out["at"], out["note"]
     if OPT["readonly"] and not res:
         res_why = "공유 서버에는 swap 기록이 없음 — swap 한 PC 의 보드에서 확인"
     return {"repo": name, "label": snap["label"], "collected_at": (load_state() or {}).get("collected_at"),
             "preview": pre, "preview_why": pre_why, "result": res, "result_why": res_why,
-            "result_at": (rec or {}).get("finished_at")}
+            "result_at": res_at, "result_note": res_note}
 
 
 class Watcher(threading.Thread):
@@ -552,6 +556,19 @@ class Handler(SimpleHTTPRequestHandler):
                 why = f"{why} — Slack 예고는 이미 보냄, " + ("스레드에 「시작 못 함」을 달았음" if sent else f"스레드 알림도 실패({serr})")
                 return self._json({"started": False, "reason": why, "slack_sent": True, "status": status}, 409)
             return self._json({"started": ok, "reason": why, "status": status}, 202 if ok else 409)
+        if path == "/api/slack":   # 「알림 문구」 창의 「Slack 으로 보내기」 — 고친 문구를 채널에 새 글로(swap 과 무관)
+            bad = self._swap_guard() if OPT["token"] else "swap 이 꺼진 서버(--allow-swap 으로 이 PC 에서만 켬)"
+            if bad:
+                return self._json({"sent": False, "error": bad}, 403)
+            if not OPT["slack"]:
+                return self._json({"sent": False, "error": "Slack 이 꺼져 있음(환경 변수 없음)"}, 409)
+            body = self._body()
+            text = (body.get("text") or "").strip()
+            if not text or len(slack.escape(text)) > slack.MAX_TEXT:
+                return self._json({"sent": False, "error": "문구가 비어 있음" if not text else f"문구가 {slack.MAX_TEXT}자를 넘음"}, 400)
+            sent, ts, err = slack.post(OPT["slack"], text)
+            print(f"Slack 알림 문구 보냄 repo={body.get('repo')} sent={sent} {err or ''}", file=sys.stderr)
+            return self._json({"sent": sent, "ts": ts, "channel": OPT["slack"]["channel"], "error": err}, 200 if sent else 502)
         if path == "/api/recheck":
             if not OPT["swap"]:
                 return self._json({"error": "swap 이 꺼진 서버"}, 403)

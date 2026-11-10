@@ -48,10 +48,12 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
 - 로그인되는 주소는 Entra 앱에 리디렉션 URI 로 등록된 곳뿐이다: `http://localhost:8765/`, `http://localhost:8790/`, 개발 서버 Tailscale 주소. `127.0.0.1` 로 열면 로그인 불가 안내가 나온다.
 - 화면에는 CSP(`script-src 'self'` + 인라인 스크립트 해시, `connect-src` 는 login.microsoftonline.com·management.azure.com 만)와 `Referrer-Policy: no-referrer` 를 건다.
 
-## 배포 알림 문구(복사용 — 보드는 보내지 않음)
+## 배포 알림 문구(복사용 — 내 PC 보드에서는 결과를 Slack 으로 보내기도 함)
 - swap 앱이 있는 레포 카드 머리의 「알림 문구」 버튼을 누르면 모달 다이얼로그가 열리고 Slack 에 붙여 넣을 문구 두 개가 나온다. 「복사」로 클립보드에 넣고 Esc 로 닫는다. 세 실행 방법 모두에서 보인다.
   - 예고: 지금 스테이징에만 있는 커밋(swap 하면 운영에 나갈 것)을 이슈 키별로 묶는다. 제목은 PR 제목 → 커밋 첫 줄(Jira 는 읽지 않음).
   - 결과: 이 PC 의 마지막 swap 기록의 스냅숏으로 「반영 완료」를 만들고 추가·수정·변경으로 나눈다(conventional 접두어 `feat`·`fix` 와 「추가」「수정」 같은 낱말로 판정). 실패·되돌리기 기록이면 그 문구가, 공유 서버에서는 「swap 한 PC 에서 확인」 안내가 나온다.
+  - 보드 밖(Azure Portal 등) swap: 수집한 마지막 swap 이 이 PC 의 swap 기록보다 5분 넘게 늦으면 그 swap 의 결과 초안을 만든다. 나간 커밋 목록은 모르므로 운영 SHA 를 배포한 run 제목으로 불릿을 만들고, 창에 「보드 밖에서 한 swap — 고쳐서 보내세요」 안내가 나온다(`notice.outside_swap`).
+- 「Slack 으로 보내기」(결과 칸 옆): 내 PC 보드(`--allow-swap`)이고 Slack 이 켜져 있을 때만 보인다. 누르면 받는 채널과 문구를 보여 주는 확인 창이 뜨고, 확인하면 채널에 새 글로 보낸다(스레드 아님). API `POST /api/slack`(loopback·보드 토큰 검사).
 - 사내 글 형식을 따른다: 첫 줄 결론(`*굵게*`), `•` 한 줄 불릿 5개까지(넘으면 「외 N건」), 300자·8줄 안(넘으면 제목을 줄임). 코드 `notice.py`, API `GET /api/notice?repo=<이름>`.
 
 ## Slack 봇 전송(내 PC 용 `--allow-swap` 에서만)
@@ -61,10 +63,10 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
   - 레포 폴더의 `.env`(git 에 안 올라감)에 `KEY=값` 으로 적어도 된다. 시작할 때 `DEPLOY_BOARD_` 로 시작하는 키만 읽고, 같은 이름의 환경 변수가 있으면 그쪽이 먼저다. 읽은 키 이름(값 아님)을 콘솔에 찍는다. `DEPLOY_BOARD_SLACK_APP_TOKEN`(xapp-)은 지금 쓰지 않는다.
   - PowerShell 예: `[Environment]::SetEnvironmentVariable("DEPLOY_BOARD_SLACK_TOKEN", "xoxb-…", "User")` 뒤 새 터미널에서 실행.
 - 토큰은 repos.json·git·notes·공유 서버에 두지 않는다. 화면·`/api/status`·swap-log·state.json 에도 나가지 않는다(채널 ID 만 보임). 공유 서버(`--readonly`)와 웹 로그인 swap 에서는 보내지 않는다.
-- 흐름: swap 확인 창에 「Slack 에 알리기」 체크(기본 꺼짐)와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면
+- 흐름: swap 확인 창(카드의 swap 버튼 → 「운영에 나갈 커밋」 목록 아래)에 「Slack 에 알리기」 체크(기본 켜짐 — 알리지 않으려면 끈다)와 예고 문구(고칠 수 있음, 4000자까지)가 나온다. 체크하고 실행하면
   1. swap 을 시작할 수 있는지(권한·진행 중인 swap) 먼저 보고, 예고 글을 채널에 보낸다. **보내지 못하면 swap 하지 않는다**(체크를 끄고 다시 누르면 swap 만).
   2. swap 이 끝나면 결과(완료·실패) 문구를 예고 글의 스레드에 단다. 30분 안의 되돌리기 결과도 같은 스레드에 단다.
-  3. 스레드 전송이 실패해도 swap 결과는 그대로이고, 토스트로 알린다. 중복 글을 막으려고 다시 보내지 않는다 — 「알림 문구」에서 복사해 붙여 넣는다.
+  3. 스레드 전송이 실패해도 swap 결과는 그대로이고, 토스트로 알린다. 중복 글을 막으려고 다시 보내지 않는다 — 「알림 문구」에서 복사해 붙여 넣거나 「Slack 으로 보내기」로 보낸다.
 - swap-log 기록의 `info.slack`·`slack` 에 채널·글 ts·결과 전송 여부가 남는다. 코드 `slack.py`, 시험 `test_slack.py`(가짜 Slack API, 실제 전송 없음). 시험 때는 `DEPLOY_BOARD_SLACK_API` 로 API 주소를 가짜 서버로 바꾼다.
 
 ## 공유 서버(개발 서버) 설치·갱신·끄기

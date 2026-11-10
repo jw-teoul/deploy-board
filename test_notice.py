@@ -136,6 +136,41 @@ class Result(unittest.TestCase):
             self.assertEqual(notice.last_record(p, "pilldocsite")["id"], 3)
 
 
+class OutsideSwap(unittest.TestCase):
+    """보드 밖(Azure Portal 등)에서 한 swap — 수집한 swap 기록과 운영 배포 run 으로 결과 초안을 만든다."""
+
+    def r(self, swaps, runs=()):
+        x = repo([], issues=[{"key": "PILLDOC-2469", "title": "처방 병원 종별 조건 읽음"}])
+        x.update(prod={"sha": "p1"}, swaps=list(swaps), runs=list(runs))
+        return x
+
+    SW = {"time": "2026-11-10T08:01:31.75Z", "who": "a@b.c", "n": 2}
+    RUN = {"headSha": "p1", "displayTitle": "Merge pull request #22 from edb-data-biz/PILLDOC-2469"}
+
+    def test_no_board_record(self):
+        o = notice.outside_swap(self.r([self.SW], [self.RUN]), None)
+        self.assertEqual(o["at"], self.SW["time"])
+        self.assertEqual(o["text"].splitlines()[0], "*필독 사이트 운영 swap 완료 (11-10 17:01)*")
+        self.assertIn("확인: https://www.pilldoc.co.kr", o["text"])
+        self.assertIn("• 변경 PILLDOC-2469 처방 병원 종별 조건 읽음", o["text"])   # 제목은 이슈 제목(PR 제목)
+        self.assertNotIn("a@b.c", o["text"])                 # 실행자 메일은 문구에 넣지 않는다
+        self.assertIn("보드 밖", o["note"])
+
+    def test_board_record_is_latest(self):   # 보드가 한 swap 도 Azure 기록에 남는다 — 같은 swap 이면 보드 기록을 쓴다
+        rec = {"finished_at": "2026-11-10T08:02:30+00:00"}
+        self.assertIsNone(notice.outside_swap(self.r([self.SW], [self.RUN]), rec))
+
+    def test_newer_than_board_record(self):
+        rec = {"finished_at": "2026-11-10T06:41:00+00:00"}
+        self.assertIsNotNone(notice.outside_swap(self.r([self.SW], [self.RUN]), rec))
+
+    def test_no_swaps_or_no_matching_run(self):
+        self.assertIsNone(notice.outside_swap(self.r([]), None))
+        o = notice.outside_swap(self.r([self.SW], [{"headSha": "zz", "displayTitle": "x"}]), None)
+        self.assertNotIn("•", o["text"])
+        self.assertIn("나간 커밋", o["note"])
+
+
 class WhoAmI(unittest.TestCase):
     def test_logged_in(self):
         def run(args, timeout=0):

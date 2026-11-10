@@ -354,6 +354,40 @@ class Endpoint(SwapBase):
         self.assertIsNone(self.runner.status["job"])
         self.assertIsNone(self.runner.status["last"])
 
+    def post(self, body, token="board-token"):
+        import urllib.error
+        import urllib.request
+        url = "http://127.0.0.1:%d/api/slack" % server.OPT["port"]
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "X-Board-Token": token})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_send_result_text(self):   # 「알림 문구」 창의 「Slack 으로 보내기」 — 고친 문구를 채널에 새 글로 보낸다
+        code, j = self.post({"repo": "pilldocsite", "text": "*필독 사이트 운영 swap 완료*"})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(j["sent"])
+        self.assertEqual(self.fake.calls[0]["body"]["text"], "*필독 사이트 운영 swap 완료*")
+        self.assertNotIn("thread_ts", self.fake.calls[0]["body"])
+        self.assertNotIn(TOKEN, json.dumps(j, ensure_ascii=False))
+
+    def test_send_rejects(self):
+        self.assertEqual(self.post({"repo": "pilldocsite", "text": "x"}, token="bad")[0], 403)
+        self.assertEqual(self.post({"repo": "pilldocsite", "text": " "})[0], 400)
+        self.assertEqual(self.post({"repo": "pilldocsite", "text": "가" * (slack.MAX_TEXT + 1)})[0], 400)
+        server.OPT["slack"] = None
+        self.assertEqual(self.post({"repo": "pilldocsite", "text": "x"})[0], 409)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_send_failure(self):
+        self.fake.fail_main = True
+        code, j = self.post({"repo": "pilldocsite", "text": "x"})
+        self.assertEqual(code, 502)
+        self.assertFalse(j["sent"])
+
     def test_start_fails_after_preview(self):
         self.runner.start = lambda repo, action, info: (False, "이미 진행 중")   # can_start 뒤 경합
         code, j = self.call({"repo": "pilldocsite", "action": "swap", "slack": {"text": "예고"}})
