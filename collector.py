@@ -40,7 +40,9 @@ def sh(args, timeout=120, cwd=None):
     try:
         return p.stdout.decode("utf-8")
     except UnicodeDecodeError:   # Windows 의 az.cmd 는 PYTHONIOENCODING 을 무시하고 cp949 로 내보낼 때가 있다(구독 이름 등 한글)
-        return p.stdout.decode(locale.getpreferredencoding(False) or "utf-8", "replace")
+        # python -X utf8 로 뜨면 getpreferredencoding 도 utf-8 이라 못 푼다 — getencoding 은 UTF-8 모드와 무관하게 OS 코드 페이지(cp949)
+        enc = getattr(locale, "getencoding", lambda: locale.getpreferredencoding(False))() or "utf-8"
+        return p.stdout.decode(enc, "replace")
 
 
 def gh_json(args, timeout=120):

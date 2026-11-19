@@ -573,6 +573,13 @@ class Handler(SimpleHTTPRequestHandler):
                 r = repo_state(body.get("repo"))
                 if r:
                     info["snapshot"] = {"label": r.get("label") or r.get("name"), "url": r.get("url")}
+            ok, why, _, _ = OPT["swap"].can_start(body.get("repo"), body.get("action"))
+            if not ok:   # 여기서 막히면 끝 — 뒤에서 캐시가 바뀌어도 아래 확인 없이 진행하지 않는다
+                return self._json({"started": False, "reason": why, "status": status}, 409)
+            # 권한 캐시는 1시간마다라 그 사이 로그아웃·토큰 만료·계정 전환이 있을 수 있다 — Slack 예고·swap 전에 지금 로그인으로 다시 묻는다
+            lok, lwhy = OPT["swap"].live_check(body.get("repo"))
+            if not lok:
+                return self._json({"started": False, "reason": f"지금 다시 확인해 보니 swap 할 수 없음 — {lwhy}", "status": status}, 409)
             err = slack_preview(body.get("repo"), body.get("action"), info, body.get("slack"))
             if err:
                 return self._json({"started": False, "reason": err, "status": status}, 409)
@@ -669,8 +676,9 @@ def main():
         OPT["swap"] = swap.SwapRunner(collector.load_cfg, SWAP_LOG, on_done=after_swap, notify=slack_result)
         status["mode"] = "swap"
         status["swap"] = OPT["swap"].status
-        threading.Thread(target=OPT["swap"].perm_loop, daemon=True).start()
-    if not a.readonly and a.bind in LOOPBACK:
+        # 로그인 표시와 swap 권한을 한 주기에서 같이 읽는다(따로 돌면 헤더는 로그인, 버튼은 실패처럼 엇갈린다)
+        threading.Thread(target=OPT["swap"].perm_loop, kwargs={"before": check_accounts}, daemon=True).start()
+    elif not a.readonly and a.bind in LOOPBACK:
         threading.Thread(target=account_loop, daemon=True).start()
     if not a.no_collect:
         start_refresh()

@@ -316,7 +316,8 @@ function swapPending(r, sw) {
 // swap 을 막는 이유(없으면 "")
 function swapBlock(r, sw, act) {
   const perm = sw.perms?.[r.name];
-  if (!perm) return "권한 조회 중";
+  if (!perm) return sw.checking ? "권한 조회 중" : "권한 조회 전 — 「권한 다시 확인」";
+  if (perm.error) return "권한 확인 실패(권한이 없다는 뜻은 아님) — " + perm.reason + " — az login 확인 뒤 「권한 다시 확인」";
   if (!perm.ok) return "swap 권한 없음 — " + perm.reason;
   if (sw.job) return `다른 swap 진행 중(${sw.job.repo})`;
   if (act === "undo") return undoOpen(sw, r.name) ? "" : "되돌릴 swap 없음";
@@ -419,7 +420,7 @@ function showAccounts(st) {
   el.hidden = !a;
   if (a) {
     const one = (name, x, hint) => x?.ok ? `${name}: ${esc(x.user || "?")}`
-      : `<span class="bad" title="${esc((x?.reason || "") + " — 터미널에서 " + hint + " 후 「권한 다시 확인」")}">${name}: 로그인 필요</span>`;
+      : `<span class="bad" title="${esc((x?.reason || "") + " — 터미널에서 " + hint + " 후 「권한 다시 확인」")}">${name}: ${x?.user ? esc(x.user) + " 토큰 확인 실패" : "로그인 필요"}</span>`;
     el.innerHTML = `${one("az", a.az, "az login")}${a.az?.ok && a.az.sub ? ` <span title="az 구독">(${esc(a.az.sub)})</span>` : ""} · ${one("gh", a.gh, "gh auth login")}`;
     el.title = `로그인 확인 ${fmt(a.checked_at)}`;
   }
@@ -451,14 +452,21 @@ $("#recheck").onclick = async () => {
     if (await WEBLOGIN.checkPerms()) toast(WEBLOGIN.sw.perms_checked_at !== t0 ? "swap 권한을 다시 확인했습니다" : "권한 조회에 실패했습니다 — 버튼에 마우스를 올려 이유 확인", WEBLOGIN.sw.perms_checked_at === t0);
     return;
   }
+  const r0 = LAST_ST?.swap?.perms_round;   // 요청 전에 잡는다 — 빨리 끝나면 응답에 이미 새 번호가 들어 있다(시각은 초 단위라 같은 초면 못 가린다)
   try {
     const res = await fetch("/api/recheck", {method:"POST", headers:{"X-Board-Token":TOKEN}});
     const j = await res.json();
     if (!res.ok && res.status !== 409) { toast("다시 확인 못 함 — " + (j.error || res.status), true); return; }
     trackStatus(j.status);
-    const t0 = LAST_ST?.swap?.perms_checked_at;
     const poll = setInterval(async () => { try { const t = await (await fetch("/api/status", {cache:"no-store"})).json(); trackStatus(t);
-      if (!t.swap?.checking) { clearInterval(poll); toast(t.swap?.perms_checked_at !== t0 ? "로그인·swap 권한을 다시 확인했습니다" : "다시 확인했지만 권한 조회 시각이 그대로입니다 — az 로그인 확인"); } } catch {} }, 1500);
+      if (t.swap?.checking) return;
+      clearInterval(poll);
+      const failed = t.swap?.perms_failed || 0, az = t.accounts?.az;
+      if (az && !az.ok) toast("az 로그인이 필요합니다 — " + (az.reason || ""), true);
+      else if (failed) toast(`권한 조회 ${failed}건 실패 — 버튼에 마우스를 올려 이유 확인`, true);
+      else if (t.swap?.perms_round === r0) toast("다시 확인했지만 권한 조회가 끝나지 않았습니다 — az 로그인 확인", true);
+      else toast("로그인·swap 권한을 다시 확인했습니다");
+    } catch {} }, 1500);
   } catch (e) { toast("요청 실패 — " + e, true); }
 };
 

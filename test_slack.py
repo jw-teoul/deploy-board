@@ -359,6 +359,33 @@ class Endpoint(SwapBase):
         self.assertIn("필독 사이트 swap 되돌림", self.fake.calls[2]["body"]["text"])
         self.assertIn("확인: https://www.pilldoc.co.kr", self.fake.calls[2]["body"]["text"])   # 되돌리기 기록에도 사이트 주소
 
+    def test_live_check_failure_blocks_before_slack(self):   # 캐시는 허용인데 지금 로그인으로는 안 됨 — 예고도 swap 도 없음
+        self.runner.fake = os.environ["DEPLOY_BOARD_SWAP_CMD"]
+        seen = []
+        self.runner.live_check = lambda repo: (seen.append(repo), (False, "로그인 만료"))[1]
+        code, j = self.call({"repo": "pilldocsite", "action": "swap", "slack": {"text": "예고"}})
+        self.assertEqual(code, 409, j)
+        self.assertIn("로그인 만료", j["reason"])
+        code, j = self.call({"repo": "pilldocsite", "action": "undo"})
+        self.assertEqual(code, 409, j)
+        self.assertEqual(seen, ["pilldocsite"])   # 되돌리기는 기록이 없어 can_start 가 먼저 막는다
+        self.assertEqual(self.fake.calls, [])
+        self.assertIsNone(self.runner.status["last"])
+
+    def test_first_gate_failure_stops_even_if_cache_turns_ok(self):   # 첫 검사에서 막히면 그 자리에서 끝 — 그 사이 캐시가 바뀌어도 live_check 없이 진행하지 않는다
+        self.runner.fake = os.environ["DEPLOY_BOARD_SWAP_CMD"]
+        answers = iter([(False, "swap 권한 조회 전", None, None)])
+        orig = self.runner.can_start
+        self.runner.can_start = lambda repo, action: next(answers, None) or orig(repo, action)
+        seen = []
+        self.runner.live_check = lambda repo: (seen.append(repo), (True, "ok"))[1]
+        code, j = self.call({"repo": "pilldocsite", "action": "swap", "slack": {"text": "예고"}})
+        self.assertEqual(code, 409, j)
+        self.assertIn("조회 전", j["reason"])
+        self.assertEqual(seen, [])
+        self.assertEqual(self.fake.calls, [])
+        self.assertIsNone(self.runner.status["last"])
+
     def test_preview_failure_returns_409_and_no_swap(self):
         self.fake.fail_main = True
         code, j = self.call({"repo": "pilldocsite", "action": "swap", "slack": {"text": "예고"}})

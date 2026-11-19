@@ -48,6 +48,21 @@ def swap_allowed(perms, action=SWAP_ACTION):
     return False, blocked_by or "swap 을 허용하는 역할 없음"
 
 
+def well_formed(d):
+    """permissions 응답 모양 검사 → 문제 문구 또는 None. 모양이 틀린 응답을 허용으로 읽지 않게(빈 값은 「제외 없음」으로 읽히므로).
+    실제 응답(11-19 7개 앱)은 항목마다 actions·notActions 가 문자열 목록이다."""
+    if not isinstance(d, dict) or not isinstance(d.get("value"), list):
+        return "value 목록 없음"
+    for p in d["value"]:
+        if not isinstance(p, dict):
+            return "항목이 객체가 아님"
+        for k in ("actions", "notActions"):
+            v = p.get(k)
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                return f"{k} 가 문자열 목록이 아님"
+    return None
+
+
 def whoami(run=None):
     """이 PC 의 az·gh 로그인 상태 → {"az": {...}, "gh": {...}, "checked_at"}. 로그인은 하지 않고 확인만 한다.
     run 은 시험용(collector.sh 대체)."""
@@ -58,6 +73,13 @@ def whoami(run=None):
         out["az"] = {"ok": True, "user": d.get("user"), "sub": d.get("sub")}
     except Exception as e:
         out["az"] = {"ok": False, "reason": "az login 필요 또는 확인 실패 — " + str(e)[:200]}
+    if out["az"]["ok"]:
+        # account show 는 이 PC 에 저장된 계정만 읽어 토큰이 만료돼도 성공한다 — 토큰을 실제로 받아 봐야 swap 권한 조회와 같은 답이 된다
+        try:
+            run(["az", "account", "get-access-token", "--query", "expiresOn", "-o", "tsv"], timeout=60)
+        except Exception as e:
+            out["az"] = {"ok": False, "user": out["az"]["user"], "sub": out["az"]["sub"],
+                         "reason": "az 토큰을 못 받음(로그인 만료 또는 통신 오류) — az login 다시 — " + str(e)[:200]}
     try:
         out["gh"] = {"ok": True, "user": run(["gh", "api", "user", "--jq", ".login"], timeout=30).strip()}
     except Exception as e:
@@ -73,8 +95,11 @@ class SwapRunner:
         self.cfg_loader, self.log_path, self.on_done, self.notify = cfg_loader, log_path, on_done, notify
         self.lock = threading.Lock()
         self.check_lock = threading.Lock()
+        self.perm_lock = threading.Lock()   # 권한 캐시 쓰기 — 주기 확인과 live_check 가 동시에 쓴다
+        self.perm_seq, self.perm_at = 0, {}   # 조회 시작 번호, 앱별로 마지막에 적힌 결과의 시작 번호
         self.fake = os.environ.get("DEPLOY_BOARD_SWAP_CMD")
         self.status = {"enabled": True, "fake": bool(self.fake), "perms": {}, "perms_checked_at": None,
+                       "perms_failed": 0, "perms_round": 0,
                        "job": None, "last": None, "undo": {}, "undo_minutes": UNDO_MINUTES,
                        "resource_group": cfg_loader().get("resource_group")}
 
@@ -82,30 +107,85 @@ class SwapRunner:
     def site_id(self, cfg, sub, app):
         return f"/subscriptions/{sub}/resourceGroups/{cfg['resource_group']}/providers/Microsoft.Web/sites/{app}"
 
-    def check_perms(self):
-        cfg = self.cfg_loader()
+    def ticket(self):
+        """조회를 시작할 때 번호를 받는다 — 늦게 시작한 조회의 결과가 이긴다."""
+        with self.perm_lock:
+            self.perm_seq += 1
+            return self.perm_seq
+
+    def put_perm(self, name, p, seq):
+        """먼저 시작했지만 늦게 끝난 조회가 더 새 결과(예: 계정 전환 뒤 live_check 의 실패)를 덮지 않게 한다(11-19 Codex 재검토)."""
+        with self.perm_lock:
+            if self.perm_at.get(name, 0) > seq:
+                return False
+            self.perm_at[name] = seq
+            self.status["perms"][name] = p
+            self.status["perms_failed"] = sum(1 for v in self.status["perms"].values() if v.get("error"))
+            return True
+
+    def fail_all(self, why, names=(), seq=None):
+        """확인 자체가 실패하면 예전 「허용」을 남기지 않는다 — 버튼이 지금 로그인과 다른 결과로 켜져 있지 않게.
+        error=True 는 「권한 없음」이 아니라 「확인 못 함」(화면 문구가 다르다)."""
+        seq = seq or self.ticket()
+        for name in set(self.status["perms"]) | set(names):
+            self.put_perm(name, {"ok": False, "error": True, "reason": why[:300]}, seq)
+
+    def perm_of(self, cfg, sub, rc):
+        """앱 하나의 swap 권한 → {"ok", "reason", "error"?}. az rest 는 토큰이 살아 있어야 되므로 로그인 확인도 겸한다.
+        예외를 내지 않는다(응답 모양이 이상해도 「확인 실패」)."""
+        try:
+            url = f"https://management.azure.com{self.site_id(cfg, sub, rc['app'])}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
+            d = json.loads(collector.sh(["az", "rest", "--method", "get", "--url", url], timeout=60) or "{}")
+            bad = well_formed(d)
+            if bad:
+                return {"ok": False, "error": True, "reason": f"권한 조회 응답이 예상과 다름 — {bad}"}
+            ok, why = swap_allowed(d["value"])
+            return {"ok": ok, "reason": why}
+        except Exception as e:
+            return {"ok": False, "error": True, "reason": f"권한 조회 실패 — {e}"[:300]}
+
+    def check_perms(self, seq=None):
+        seq = seq or self.ticket()
+        try:
+            cfg = self.cfg_loader()
+            apps = [rc for rc in cfg["repos"] if rc.get("app")]
+        except Exception as e:
+            return self.fail_all(f"설정을 못 읽음 — {e}", seq=seq)
         try:
             sub = collector.Collector(cfg).subscription()
         except Exception as e:
-            for rc in cfg["repos"]:
-                if rc.get("app"):
-                    self.status["perms"][rc["name"]] = {"ok": False, "reason": f"az 로그인 확인 실패 — {e}"[:300]}
-            return
+            return self.fail_all(f"az 로그인 확인 실패 — {e}", [rc["name"] for rc in apps], seq)
         def one(rc):   # az 호출이 한 번에 10초 넘게 걸려 레포별로 동시에 묻는다
-            url = f"https://management.azure.com{self.site_id(cfg, sub, rc['app'])}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
-            try:
-                d = json.loads(collector.sh(["az", "rest", "--method", "get", "--url", url], timeout=60) or "{}")
-                ok, why = swap_allowed(d.get("value"))
-                self.status["perms"][rc["name"]] = {"ok": ok, "reason": why}
-            except Exception as e:
-                self.status["perms"][rc["name"]] = {"ok": False, "reason": f"권한 조회 실패 — {e}"[:300]}
+            self.put_perm(rc["name"], self.perm_of(cfg, sub, rc), seq)
         with ThreadPoolExecutor(max_workers=4) as pool:
-            list(pool.map(one, [rc for rc in cfg["repos"] if rc.get("app")]))
+            list(pool.map(one, apps))
+        self.status["perms_round"] += 1   # 화면은 시각(초 단위) 대신 이 번호로 「새로 확인함」을 안다
         self.status["perms_checked_at"] = now()
 
-    def perm_loop(self, every_s=3600):
+    def live_check(self, repo):
+        """swap·되돌리기 직전(Slack 예고보다 먼저) 그 앱의 권한을 지금 로그인으로 다시 묻는다 → (ok, 이유).
+        캐시는 1시간마다라 그 사이 로그아웃·토큰 만료·계정 전환·권한 회수가 있으면 버튼만 켜져 있다(11-19 Codex 검토).
+        결과로 캐시도 고친다. 가짜 명령으로 시험할 때는 az 를 부르지 않는다."""
+        if self.fake:
+            return True, "가짜 명령"
+        seq = self.ticket()
+        try:
+            cfg = self.cfg_loader()
+            rc = next((r for r in cfg["repos"] if r["name"] == repo), None)
+            if not rc or not rc.get("app"):
+                return True, "swap 모드 레포가 아님"   # 거절은 can_start 가 한다
+            sub = collector.Collector(cfg).subscription()
+        except Exception as e:
+            p = {"ok": False, "error": True, "reason": f"az 로그인 확인 실패 — {e}"[:300]}
+        else:
+            p = self.perm_of(cfg, sub, rc)
+        self.put_perm(repo, p, seq)
+        return p["ok"], p["reason"]
+
+    def perm_loop(self, every_s=3600, before=None):
+        """before: 같은 때에 로그인 표시도 다시 읽는다(헤더와 버튼이 다른 시점 결과를 보이지 않게)."""
         while True:
-            self.recheck()
+            self.recheck(before)
             time.sleep(every_s)
 
     def begin_check(self):
@@ -116,12 +196,17 @@ class SwapRunner:
         return True
 
     def run_check(self, before=None):
+        seq = self.ticket()   # 확인이 터져 전체 실패로 바꿀 때도 이 번호로 — 그 뒤에 시작한 live_check 결과를 덮지 않게
         try:
             if before:
-                before()
-            self.check_perms()
-        except Exception:
+                try:
+                    before()
+                except Exception:
+                    traceback.print_exc()
+            self.check_perms(seq)
+        except Exception as e:
             traceback.print_exc()
+            self.fail_all(f"권한 확인 중 오류 — {e}", seq=seq)
         finally:
             self.status["checking"] = False
             self.check_lock.release()
@@ -153,8 +238,12 @@ class SwapRunner:
         if action not in ("swap", "undo"):
             return False, "알 수 없는 동작", cfg, rc
         perm = self.status["perms"].get(repo)
-        if not perm or not perm.get("ok"):
-            return False, "swap 권한 없음 또는 조회 전" + (f" — {perm['reason']}" if perm else ""), cfg, rc
+        if not perm:
+            return False, "swap 권한 조회 전", cfg, rc
+        if perm.get("error"):
+            return False, f"swap 권한을 확인하지 못함 — {perm['reason']}", cfg, rc
+        if not perm.get("ok"):
+            return False, f"swap 권한 없음 — {perm['reason']}", cfg, rc
         if action == "undo" and not self.undo_open(repo):
             return False, f"되돌릴 swap 이 없음(이 보드에서 {UNDO_MINUTES}분 안에 한 swap 만)", cfg, rc
         if self.status["job"]:

@@ -29,6 +29,19 @@ def commit(sha, key, date="2026-10-21T00:00:00Z"):
     return {"sha": sha, "message": f"{key} fix", "author": "a", "date": date, "url": "", "keys": [key]}
 
 
+class ShDecodeTest(unittest.TestCase):
+    """az.cmd 가 한글을 cp949 로 내보낼 때 — 보드는 python -X utf8 로 떠서 「기본 인코딩」도 utf-8 이라 그걸로는 못 푼다(11-19 헤더 구독 이름 깨짐)."""
+
+    def test_cp949_output_decoded(self):
+        import subprocess
+        from unittest import mock
+        done = subprocess.CompletedProcess([], 0, stdout="이디비\r\n".encode("cp949"), stderr=b"")
+        with mock.patch.object(collector.subprocess, "run", return_value=done), \
+             mock.patch.object(collector.locale, "getpreferredencoding", return_value="utf-8"), \
+             mock.patch.object(collector.locale, "getencoding", return_value="cp949", create=True):
+            self.assertEqual(collector.sh(["az", "account", "show"]).strip(), "이디비")
+
+
 class JudgeTest(unittest.TestCase):
     def setUp(self):
         self.c = collector.Collector({"org": "o", "repos": []})

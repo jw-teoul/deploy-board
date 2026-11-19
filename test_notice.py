@@ -192,7 +192,7 @@ class Recheck(unittest.TestCase):
     def test_second_press_refused_while_checking(self):
         r = swap.SwapRunner(lambda: {"repos": [], "resource_group": "rg"}, os.devnull, on_done=lambda _: None)
         calls = []
-        r.check_perms = lambda: calls.append("perms")
+        r.check_perms = lambda seq=None: calls.append("perms")
         self.assertTrue(r.begin_check())
         self.assertTrue(r.status["checking"])
         self.assertFalse(r.begin_check())        # 도는 동안 겹쳐 누름

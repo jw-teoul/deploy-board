@@ -28,12 +28,13 @@ node test_weblogin.js                         # 웹 로그인 권한 판정(perm
 - `data/state.json` 에는 브랜치·커밋 메시지·PR 제목·swap 실행자 이메일, 구독 ID·리소스 그룹(`azure`, 웹 로그인 swap 주소용)이 들어 있다. gitignore 되어 있으니 레포에 올리지 말고, 공유 서버로 올릴 때도 같은 망 사람이 보게 된다는 점을 안다.
 
 ## swap (내 PC 용 `--allow-swap`)
-- 시작할 때와 1시간마다 앱별로 내 권한을 조회한다(`GET {site}/providers/Microsoft.Authorization/permissions` — 역할마다 `actions` 에 맞고 `notActions` 에 안 걸리면 허용, 역할끼리는 합집합). 권한이 없으면 버튼이 꺼지고 툴팁(Tooltip, 마우스를 올리면 뜨는 짧은 설명)에 이유가 보인다.
+- 시작할 때와 1시간마다 앱별로 내 권한을 조회한다(`GET {site}/providers/Microsoft.Authorization/permissions` — 역할마다 `actions` 에 맞고 `notActions` 에 안 걸리면 허용, 역할끼리는 합집합). 권한이 없으면 버튼이 꺼지고 툴팁(Tooltip, 마우스를 올리면 뜨는 짧은 설명)에 이유가 보인다. 조회 자체가 실패하면(로그인 만료·네트워크) 「권한 없음」이 아니라 「권한 확인 실패」로 보이고, 확인이 통째로 실패하면 예전 「허용」도 지운다.
+- **누르는 순간 다시 확인**: 권한 목록은 1시간마다라 그 사이 로그아웃·토큰 만료·계정 전환·권한 회수가 있을 수 있다. swap·되돌리기를 누르면 서버가 Slack 예고와 swap 전에 그 앱의 권한을 지금 로그인으로 다시 묻고(약 1~2초), 안 되면 409 로 멈춘다(예고도 안 나감).
 - 버튼은 이럴 때 꺼진다: 권한 없음, 다른 swap 진행 중, 스테이징 배포 run 진행 중, 운영 SHA 미확인, 스테이징에만 있는 커밋 없음, 그 레포를 다시 수집하는 중.
 - swap 을 누르면 모달 다이얼로그(Modal Dialog, 뒤 화면을 막고 확인을 받는 창)가 열려 운영·스테이징 SHA, 나갈 커밋·이슈 키, 실행 명령을 보여 준다. 앱 이름을 그대로 입력해야 실행 버튼이 켜지고 Esc 로 닫힌다. 실행: `az webapp deployment slot swap -g <리소스 그룹> -n <앱> --slot staging --target-slot production`(15분 제한).
 - 끝나면 토스트(Toast, 잠깐 떴다 사라지는 알림)로 결과를 알리고 그 레포만 다시 수집한다. 이 보드에서 한 swap 은 30분 동안 「되돌리기」(같은 명령으로 다시 맞바꿈)가 보인다.
 - 모든 실행은 `data/swap-log.jsonl` 에 남는다(누가·언제·무엇을·결과). Azure 활동 기록에도 내 이름으로 남는다. swap 할 때 서버가 `state.json` 에서 그 순간 나가는 이슈·커밋 목록(스냅숏)을 만들어 같이 남긴다(화면이 보낸 값은 참고로만 `client` 에).
-- 헤더에 이 PC 의 로그인 상태(`az: 계정 (구독) · gh: 계정`)가 보인다(127.0.0.1 바인딩일 때만, 1시간마다 확인). 로그인이 풀렸으면 「로그인 필요」가 빨갛게 뜨고 툴팁에 `az login`·`gh auth login` 이 보인다. 터미널에서 로그인한 뒤 「권한 다시 확인」 버튼을 누르면 로그인 상태와 앱별 swap 권한을 바로 다시 조회한다(`POST /api/recheck`, swap 과 같은 토큰·주소 확인, 겹쳐 누르면 409).
+- 헤더에 이 PC 의 로그인 상태(`az: 계정 (구독) · gh: 계정`)가 보인다(127.0.0.1 바인딩일 때만, 1시간마다 확인 — swap 모드에서는 권한 조회와 같은 주기에서 이어서 읽는다 — 조회가 도는 몇 초 동안은 새 헤더와 이전 권한이 함께 보일 수 있고, 그 틈은 누르는 순간 다시 확인이 막는다). az 는 `az account show`(이 PC 에 저장된 계정)에 더해 `az account get-access-token` 으로 토큰을 실제로 받아 본다 — 계정은 남아 있어도 토큰을 못 받으면(만료·통신 오류) 「계정 토큰 확인 실패」로 보인다. 로그인이 풀렸으면 「로그인 필요」가 빨갛게 뜨고 툴팁에 `az login`·`gh auth login` 이 보인다. 터미널에서 로그인한 뒤 「권한 다시 확인」 버튼을 누르면 로그인 상태와 앱별 swap 권한을 바로 다시 조회한다(`POST /api/recheck`, swap 과 같은 토큰·주소 확인, 겹쳐 누르면 409).
 - 다른 사이트·다른 PC 에서 swap 요청을 못 보내게 막는다: 127.0.0.1 바인딩 + 접속 주소 loopback 확인 + Host·Origin 확인 + 시작할 때 만든 토큰(화면에만 심고 `X-Board-Token` 헤더로 받음).
 - 시험은 실제 az 대신 가짜 명령으로 한다: `DEPLOY_BOARD_SWAP_CMD='python -c "import time;time.sleep(3)"' python server.py --allow-swap --bind 127.0.0.1`. 헤더에 「swap 켜짐 (가짜 명령)」이 보인다. 가짜 명령 기록은 `data/swap-log.fake.jsonl` 에 따로 남아 실제 기록·알림 문구와 섞이지 않는다.
 
