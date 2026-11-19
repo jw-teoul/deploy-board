@@ -317,6 +317,7 @@ def repo_state(name):
 
 def check_accounts():
     status["accounts"] = swap.whoami()
+    return status["accounts"]   # swap 권한 확인이 로그인 실패를 보고 버튼을 바로 끄는 데 쓴다
 
 
 def account_loop(every_s=3600):

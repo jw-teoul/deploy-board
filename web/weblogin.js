@@ -28,7 +28,41 @@ const WEBLOGIN = (function () {
     }
     return [false, blockedBy || "swap 을 허용하는 역할 없음"];
   }
-  if (typeof window === "undefined") return {actionMatch, swapAllowed};   // node 시험용
+  // permissions 응답 → {ok, reason, error?}. 모양이 틀린 응답은 허용으로 읽지 않는다(swap.py well_formed 와 같은 규칙 — 빈 값은 「제외 없음」으로 읽히므로).
+  function permFromResponse(j) {
+    let bad = null;
+    if (!j || !Array.isArray(j.value)) bad = "value 목록 없음";
+    else for (const p of j.value) {
+      if (!p || typeof p !== "object" || Array.isArray(p)) { bad = "항목이 객체가 아님"; break; }
+      const k = ["actions", "notActions"].find(k => !Array.isArray(p[k]) || !p[k].every(x => typeof x === "string"));
+      if (k) { bad = `${k} 가 문자열 목록이 아님`; break; }
+    }
+    if (bad) return {ok: false, error: true, reason: "권한 조회 응답이 예상과 다름 — " + bad};
+    const [ok, reason] = swapAllowed(j.value);
+    return {ok, reason};
+  }
+  // 캐시로 막는 이유(없으면 "") — error 는 「권한 없음」이 아니라 「확인 못 함」(11-19 서버 swap 과 같은 구분)
+  function permBlock(perm) {
+    if (!perm) return "swap 권한 조회 전 — 「권한 다시 확인」";
+    if (perm.error) return "권한 확인 실패(권한이 없다는 뜻은 아님) — " + perm.reason;
+    return perm.ok ? "" : "swap 권한 없음 — " + perm.reason;
+  }
+  // 권한 캐시 쓰기 — 조회 시작 때 번호를 받고, 더 늦게 시작한 조회의 결과만 남긴다(swap.py put_perm 과 같음).
+  // reset: 로그아웃 — 그 전에 시작한 조회는 다음 계정 캐시에 쓰지 않는다.
+  function permStore(perms) {
+    let seq = 0, floor = 0, at = {};
+    return {
+      ticket: () => ++seq,
+      reset() { floor = ++seq; at = {}; },
+      put(name, p, s) {
+        if (s < floor || (at[name] || 0) > s) return false;
+        at[name] = s; perms()[name] = p; return true;
+      },
+    };
+  }
+  // 실패 정리 때 webJob 기록이 이 화면의 것인가 — 다른 탭의 진행 기록을 지우면 겹친 swap 이 가능해진다(Codex 11-19 4차)
+  const ownsJob = (stored, job) => !!stored && !!job && stored.id === job.id;
+  if (typeof window === "undefined") return {actionMatch, swapAllowed, permFromResponse, permBlock, permStore, ownsJob};   // node 시험용
 
   // 로그인 갱신용 숨은 iframe·팝업 안에서 이 화면이 로그인 응답으로 열린 경우: 응답을 원래 화면에 넘기고 보드는 띄우지 않는다.
   const q = location.hash + location.search;
@@ -112,7 +146,7 @@ const WEBLOGIN = (function () {
   async function logout() {   // 이 브라우저의 토큰만 지운다(Microsoft 계정 자체 로그아웃은 하지 않음)
     if (W.sw.job) { W.toast("swap 진행 중에는 로그아웃하지 않습니다", true); return; }
     try { await W.pca.clearCache({account: W.account}); } catch {}
-    W.account = null; W.sw.enabled = false; W.sw.perms = {}; W.sw.perms_checked_at = null; W.sw.undo = {}; W.sw.pending = {};
+    PS.reset(); W.account = null; W.sw.enabled = false; W.sw.perms = {}; W.sw.perms_checked_at = null; W.sw.undo = {}; W.sw.pending = {};
     changed();
   }
   // interactive=false: swap 을 기다리는 중에는 화면을 떠나지 않는다(떠나면 결과·되돌리기 기록을 잃음)
@@ -139,21 +173,21 @@ const WEBLOGIN = (function () {
   }
 
   // ---------- 권한 조회(앱마다 동시에) ----------
+  const PS = permStore(() => W.sw.perms);
+  async function permOf(t, r) {   // 예외를 내지 않는다 — 조회 실패는 error 로
+    try { return permFromResponse(await armJson(t, `${siteId(r.app)}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01`)); }
+    catch (e) { return {ok: false, error: true, reason: "권한 조회 실패 — " + msg(e)}; }
+  }
   async function checkPerms() {
     if (!W.account || W.sw.checking) return false;
     W.sw.checking = true; changed();
+    const seq = PS.ticket();
     try {
       const t = await token();
-      await Promise.all(W.repos.map(async r => {
-        try {
-          const j = await armJson(t, `${siteId(r.app)}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01`);
-          const [ok, reason] = swapAllowed(j.value);
-          W.sw.perms[r.name] = {ok, reason};
-        } catch (e) { W.sw.perms[r.name] = {ok: false, reason: "권한 조회 실패 — " + msg(e)}; }
-      }));
+      await Promise.all(W.repos.map(async r => { PS.put(r.name, await permOf(t, r), seq); }));
       W.sw.perms_checked_at = now();
     } catch (e) {
-      for (const r of W.repos) W.sw.perms[r.name] = {ok: false, reason: "로그인 토큰을 못 받음 — " + msg(e)};
+      for (const r of W.repos) PS.put(r.name, {ok: false, error: true, reason: "로그인 토큰을 못 받음 — " + msg(e)}, seq);
     } finally { W.sw.checking = false; changed(); }
     return true;
   }
@@ -169,8 +203,8 @@ const WEBLOGIN = (function () {
     const r = W.repos.find(x => x.name === name);
     if (!r || !W.azure) return [false, "swap 모드 레포가 아님"];
     if (action !== "swap" && action !== "undo") return [false, "알 수 없는 동작"];
-    const perm = W.sw.perms[name];
-    if (!perm?.ok) return [false, "swap 권한 없음 또는 조회 전" + (perm ? " — " + perm.reason : "")];
+    const blk = permBlock(W.sw.perms[name]);
+    if (blk) return [false, blk];
     if (action === "undo" && !undoOpen(name)) return [false, `되돌릴 swap 이 없음(이 브라우저에서 ${UNDO_MIN}분 안에 한 swap 만)`];
     if (W.sw.job) return [false, `다른 swap 진행 중(${W.sw.job.repo})`];
     const other = otherJob();
@@ -181,10 +215,17 @@ const WEBLOGIN = (function () {
     let res, before, t;
     try {
       t = await token();
+      // 권한 캐시는 로그인·「권한 다시 확인」 때만 바뀐다 — 그 사이 역할 회수·계정 전환이 있을 수 있어 swap 전에 지금 토큰으로 다시 묻는다(서버 swap 의 live_check 와 같음)
+      const seq = PS.ticket();
+      const live = await permOf(t, r);
+      PS.put(name, live, seq);
+      if (!live.ok) throw new Error("지금 다시 확인해 보니 swap 할 수 없음 — " + permBlock(live));
       before = await swapStamp(t, site);
       if (action === "undo" && W.sw.undo[name]?.stamp && before && before !== W.sw.undo[name].stamp)
         throw new Error("그 사이 다른 swap 이 있었음 — 되돌리면 그 swap 을 뒤집으므로 포털에서 확인");
       job.before = before;
+      const o = otherJob();   // 위에서 기다리는 동안 다른 탭이 시작했을 수 있다
+      if (o && o.id !== job.id) throw new Error(`이 브라우저의 다른 화면에서 swap 진행 중(${o.repo})`);
       setLS(key("webJob"), job);
       res = await arm(t, "POST", `${site}/slots/staging/slotsswap?api-version=2023-12-01`, {targetSlot: "production", preserveVnet: true});
       if (res.status !== 200 && res.status !== 202) {
@@ -192,7 +233,9 @@ const WEBLOGIN = (function () {
         throw new Error(j.error?.message || `HTTP ${res.status}`);
       }
     } catch (e) {
-      W.sw.job = null; setLS(key("webJob"), null); changed();
+      W.sw.job = null;
+      if (ownsJob(getLS(key("webJob")), job)) setLS(key("webJob"), null);
+      changed();
       return [false, msg(e)];
     }
     let loc = null;
@@ -255,7 +298,7 @@ const WEBLOGIN = (function () {
     changed();
   }
 
-  return Object.assign(W, {actionMatch, swapAllowed, init, login, logout, checkPerms, start, undoOpen,
+  return Object.assign(W, {actionMatch, swapAllowed, permFromResponse, permBlock, permStore, ownsJob, init, login, logout, checkPerms, start, undoOpen,
                            armUrl: app => W.azure ? `${ARM}${siteId(app)}/slots/staging/slotsswap` : ""});
 })();
 if (typeof module !== "undefined") module.exports = WEBLOGIN;

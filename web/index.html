@@ -317,7 +317,7 @@ function swapPending(r, sw) {
 function swapBlock(r, sw, act) {
   const perm = sw.perms?.[r.name];
   if (!perm) return sw.checking ? "권한 조회 중" : "권한 조회 전 — 「권한 다시 확인」";
-  if (perm.error) return "권한 확인 실패(권한이 없다는 뜻은 아님) — " + perm.reason + " — az login 확인 뒤 「권한 다시 확인」";
+  if (perm.error) return "권한 확인 실패(권한이 없다는 뜻은 아님) — " + perm.reason + (sw.web ? " — 로그인 확인 뒤" : " — az login 확인 뒤") + " 「권한 다시 확인」";
   if (!perm.ok) return "swap 권한 없음 — " + perm.reason;
   if (sw.job) return `다른 swap 진행 중(${sw.job.repo})`;
   if (act === "undo") return undoOpen(sw, r.name) ? "" : "되돌릴 swap 없음";

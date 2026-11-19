@@ -188,6 +188,12 @@ class SwapRunner:
             self.recheck(before)
             time.sleep(every_s)
 
+    def app_names(self):
+        try:
+            return [rc["name"] for rc in self.cfg_loader()["repos"] if rc.get("app")]
+        except Exception:
+            return []
+
     def begin_check(self):
         """다시 확인을 잡는다 — 이미 도는 중이면 False(겹쳐 누름 방지). 잡았으면 run_check 가 놓는다."""
         if not self.check_lock.acquire(blocking=False):
@@ -198,11 +204,16 @@ class SwapRunner:
     def run_check(self, before=None):
         seq = self.ticket()   # 확인이 터져 전체 실패로 바꿀 때도 이 번호로 — 그 뒤에 시작한 live_check 결과를 덮지 않게
         try:
+            acc = None
             if before:
                 try:
-                    before()
+                    acc = before()
                 except Exception:
                     traceback.print_exc()
+            az = (acc or {}).get("az") if isinstance(acc, dict) else None
+            if isinstance(az, dict) and az.get("ok") is False:
+                # 헤더가 로그인 실패를 보이는데 버튼이 앱별 조회(수십 초)가 끝날 때까지 예전 「허용」으로 남지 않게 바로 끈다
+                return self.fail_all(f"az 로그인 확인 실패 — {az.get('reason') or '로그인 필요'}", self.app_names(), seq)
             self.check_perms(seq)
         except Exception as e:
             traceback.print_exc()

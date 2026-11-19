@@ -118,6 +118,34 @@ class Live(unittest.TestCase):
     def _restore(self):
         collector.sh = self.orig[0]
 
+    def test_header_login_failure_turns_buttons_off_at_once(self):
+        """헤더 확인(before)이 az 로그인 실패를 보면 앱별 조회를 기다리지 않고 바로 끈다(11-19 「추천대로」 — 헤더·버튼 틈 줄이기)."""
+        self.r.check_perms()
+        self.assertTrue(self.r.status["perms"]["a"]["ok"])
+        self.az.calls.clear()
+        self.assertTrue(self.r.begin_check())
+        self.r.run_check(before=lambda: {"az": {"ok": False, "reason": "az login 필요"}})
+        for n in ("a", "b"):
+            self.assertFalse(self.r.status["perms"][n]["ok"])
+            self.assertTrue(self.r.status["perms"][n]["error"])
+            self.assertIn("az login 필요", self.r.status["perms"][n]["reason"])
+        self.assertEqual([c for c in self.az.calls if c[:2] == ["az", "rest"]], [])
+        self.assertFalse(self.r.status["checking"])
+
+    def test_header_login_failure_covers_apps_never_checked(self):   # 첫 확인 전이라 캐시가 비어도 설정의 앱 전부
+        self.assertTrue(self.r.begin_check())
+        self.r.run_check(before=lambda: {"az": {"ok": False, "reason": "x"}})
+        self.assertEqual(set(self.r.status["perms"]), {"a", "b"})
+        self.assertEqual(self.r.status["perms_failed"], 2)
+
+    def test_header_ok_or_unknown_still_checks_perms(self):   # 로그인 정상·반환 없음은 평소대로 앱별 조회
+        for before in (lambda: {"az": {"ok": True}}, lambda: None):
+            self.az.calls.clear()
+            self.assertTrue(self.r.begin_check())
+            self.r.run_check(before=before)
+            self.assertTrue(any(c[:2] == ["az", "rest"] for c in self.az.calls))
+            self.assertTrue(self.r.status["perms"]["a"]["ok"])
+
     def test_older_check_cannot_overwrite_newer_live_check(self):
         """주기 확인이 「허용」을 받아 오는 사이 계정이 바뀌어 live_check 가 실패를 적으면, 늦게 끝난 주기 확인이 허용으로 덮지 않는다."""
         import threading
