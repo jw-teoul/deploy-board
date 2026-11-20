@@ -18,6 +18,7 @@ python server.py --no-collect --open --check 30 --swap-check 60   # --no-watch �
 python collector.py --repo adminsite   # 수집만(서버 없이) → data/state.json
 python -m unittest   # 단계 판정·swap 권한 판정·화면 보안 헤더·Slack 전송 테스트(test_*.py)
 node test_weblogin.js                         # 웹 로그인 권한 판정(perm_cases.json 을 Python 과 같이 씀)
+node test_weblogin_flow.js                    # 웹 로그인 swap 흐름(가짜 브라우저·ARM — 확인 실패 구분·누르는 순간 재확인·다른 탭 보호)
 ```
 전제(수집하는 PC): `gh`(GitHub 로그인)·`az`(Azure 로그인, Reader)·`git` 이 있고, `../projects/<repo>` 에 기준 클론이 있다(수집기는 `git fetch` 만 하고 checkout 하지 않는다). 공유 서버에는 Python 3 만 있으면 된다.
 
